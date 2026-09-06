@@ -126,7 +126,12 @@ export function setupContainer(config: Config): AppContainerInstance {
   container.register({
     // Config já validada por `infra/config.ts` — nenhum default aqui, ausência recusou na subida.
     db: asFunction(() => getModels(config.database)).singleton(),
-    logger: asFunction(createLogger).scoped(),
+    // `() => createLogger()`, nunca `asFunction(createLogger)` direto: o parâmetro de
+    // `createLogger` se chama `writer`, e o `InjectionMode.PROXY` deste container injeta pelo
+    // NOME do parâmetro — sem o wrapper, o Awilix passaria o cradle inteiro (um objeto) como
+    // `writer`, e o primeiro `logger.info/warn/error` de verdade quebraria com "writer is not
+    // a function" (achado em produção: crashava no primeiro log do boot, `index.ts`).
+    logger: asFunction(() => createLogger()).scoped(),
     webhookUrl: asValue(config.webhookUrl),
     credentialEncryptionKey: asValue(config.credentialEncryptionKey),
 
