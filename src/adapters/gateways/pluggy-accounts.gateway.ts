@@ -24,8 +24,6 @@ export interface PluggyAccountDto {
   // `CreditData` (SDK `account.d.ts`), presente só quando `account.type === 'CREDIT'` e a Pluggy
   // devolve `creditData` não nulo (conta `BANK` sempre traz `creditData: null`). Cada campo é
   // individualmente nulo/ausente conforme o que a instituição reporta; ausência aqui não é erro.
-  // `disaggregatedCreditLimits` fica de fora de propósito: lista aninhada complexa, só devolvida por
-  // conector Open Finance — fora do escopo desta tarefa.
   level: string | undefined
   brand: string | undefined
   brandAdditionalInfo: string | undefined
@@ -38,6 +36,14 @@ export interface PluggyAccountDto {
   isLimitFlexible: boolean | undefined
   status: CreditStatus | undefined
   holderType: CreditHolderType | undefined
+  // Campos capturados na change pluggy-complete-data-capture (spec pluggy-account) — antes
+  // descartados aqui mesmo. `taxNumber` vem do nível superior de `Account`, não de `creditData`.
+  taxNumber: string | undefined
+  bankData: Record<string, unknown> | undefined
+  disaggregatedCreditLimits: Record<string, unknown>[] | undefined
+  // Payload bruto, exatamente como recebido, capturado antes desta validação (change
+  // pluggy-complete-data-capture, spec pluggy-raw-payload-audit).
+  raw: Record<string, unknown>
 }
 
 export interface PluggyAccountsPageDto {
@@ -211,6 +217,15 @@ export class PluggyAccountsGateway {
       isLimitFlexible: optionalBoolean(creditData?.isLimitFlexible, itemId, index, 'creditData.isLimitFlexible'),
       status: optionalEnum(creditData?.status, CREDIT_STATUS_VALUES, itemId, index, 'creditData.status'),
       holderType: optionalEnum(creditData?.holderType, CREDIT_HOLDER_TYPES, itemId, index, 'creditData.holderType'),
+      taxNumber: optionalString(account.taxNumber, itemId, index, 'taxNumber'),
+      bankData: optionalObject(account.bankData, itemId, index, 'bankData'),
+      disaggregatedCreditLimits: optionalObjectArray(
+        creditData?.disaggregatedCreditLimits,
+        itemId,
+        index,
+        'creditData.disaggregatedCreditLimits',
+      ),
+      raw: account,
     }
   }
 }
@@ -294,6 +309,34 @@ function optionalEnum<T extends string>(
     throw new ApplicationError('PLUGGY_ACCOUNT_RESPONSE_INVALID', { itemId, index, field })
   }
   return value as T
+}
+
+// `bankData` (BankData inteiro) e `disaggregatedCreditLimits` (lista de DisaggregatedCreditLimit)
+// são carregados como objeto/array opaco — mesmo tratamento de `merchant`/`paymentData` em
+// pluggy-account-transaction.ts, sem tipagem campo a campo.
+function optionalObject(value: unknown, itemId: string, index: number, field: string): Record<string, unknown> | undefined {
+  if (value === undefined || value === null) {
+    return undefined
+  }
+  if (typeof value !== 'object' || Array.isArray(value)) {
+    throw new ApplicationError('PLUGGY_ACCOUNT_RESPONSE_INVALID', { itemId, index, field })
+  }
+  return value as Record<string, unknown>
+}
+
+function optionalObjectArray(
+  value: unknown,
+  itemId: string,
+  index: number,
+  field: string,
+): Record<string, unknown>[] | undefined {
+  if (value === undefined || value === null) {
+    return undefined
+  }
+  if (!Array.isArray(value)) {
+    throw new ApplicationError('PLUGGY_ACCOUNT_RESPONSE_INVALID', { itemId, index, field })
+  }
+  return value as Record<string, unknown>[]
 }
 
 // `creditData` só existe (não nulo) em conta `CREDIT`; conta `BANK` sempre traz `null`. Presente e

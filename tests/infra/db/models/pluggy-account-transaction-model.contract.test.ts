@@ -10,6 +10,9 @@ const migration = require('../../../../src/infra/db/migrations/20260903130000-cr
   up: (queryInterface: QueryInterface, sequelizeLib: typeof Sequelize) => Promise<void>
   down: (queryInterface: QueryInterface, sequelizeLib: typeof Sequelize) => Promise<void>
 }
+const fullCaptureMigration = require('../../../../src/infra/db/migrations/20260906180200-adicionar-credit-card-metadata-em-pluggy-connector-account-transactions.cjs') as {
+  up: (queryInterface: QueryInterface, sequelizeLib: typeof Sequelize) => Promise<void>
+}
 
 function createProxyQueryInterface(qi: QueryInterface, targetName: string, substituteName: string): QueryInterface {
   return new Proxy(qi, {
@@ -34,6 +37,10 @@ describe('contrato: model factory de pluggy_connector_account_transactions vs. m
     const tables = await queryInterface.showAllTables()
     if (!tables.includes('pluggy_connector_account_transactions')) {
       await migration.up(queryInterface, Sequelize)
+    }
+    const cols = await queryInterface.describeTable('pluggy_connector_account_transactions')
+    if (!cols.credit_card_metadata) {
+      await fullCaptureMigration.up(queryInterface, Sequelize)
     }
   })
 

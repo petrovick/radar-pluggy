@@ -21,6 +21,9 @@ import type { PluggyAccountTransactionRep } from '../../repositories/pluggy-acco
 import type { PluggyHistoryCoverageRep } from '../../repositories/pluggy-history-coverage.rep.js'
 import type { PluggyHistorySyncStateRep } from '../../repositories/pluggy-history-sync-state.rep.js'
 import type { PluggyInvestmentTransactionRep } from '../../repositories/pluggy-investment-transaction.rep.js'
+import type { PluggyAccountRawRep } from '../../repositories/pluggy-account-raw.rep.js'
+import type { PluggyAccountTransactionRawRep } from '../../repositories/pluggy-account-transaction-raw.rep.js'
+import type { PluggyInvestmentTransactionRawRep } from '../../repositories/pluggy-investment-transaction-raw.rep.js'
 
 // Códigos de aviso da Pluggy que significam "não consegui coletar este produto porque o limite de
 // coletas do plano estourou". Traduzidos aqui, na borda, para o estado de domínio
@@ -45,6 +48,9 @@ export default class LoadPluggyHistoryImpl
   private readonly pluggyInvestmentTransactionRep: PluggyInvestmentTransactionRep
   private readonly pluggyHistoryCoverageRep: PluggyHistoryCoverageRep
   private readonly pluggyHistorySyncStateRep: PluggyHistorySyncStateRep
+  private readonly pluggyAccountRawRep: PluggyAccountRawRep
+  private readonly pluggyAccountTransactionRawRep: PluggyAccountTransactionRawRep
+  private readonly pluggyInvestmentTransactionRawRep: PluggyInvestmentTransactionRawRep
 
   constructor(params: AppContainer) {
     super(params)
@@ -59,6 +65,9 @@ export default class LoadPluggyHistoryImpl
     this.pluggyInvestmentTransactionRep = params.pluggyInvestmentTransactionRep
     this.pluggyHistoryCoverageRep = params.pluggyHistoryCoverageRep
     this.pluggyHistorySyncStateRep = params.pluggyHistorySyncStateRep
+    this.pluggyAccountRawRep = params.pluggyAccountRawRep
+    this.pluggyAccountTransactionRawRep = params.pluggyAccountTransactionRawRep
+    this.pluggyInvestmentTransactionRawRep = params.pluggyInvestmentTransactionRawRep
   }
 
   async readCurrentItemState(itemId: string): Promise<CurrentItemHistoryState> {
@@ -80,18 +89,35 @@ export default class LoadPluggyHistoryImpl
     return state?.getLastCompletedItemUpdatedAt()
   }
 
-  // Descobre e registra as contas de depósito percorrendo a paginação inteira, persistindo cada
-  // página na hora. Cartão de crédito é ignorado sem recusar o item (spec pluggy-account).
+  // Descobre e registra as contas de depósito e de cartão de crédito percorrendo a paginação
+  // inteira, persistindo cada página na hora (change pluggy-complete-data-capture, spec
+  // pluggy-account: `CREDIT` deixou de ser ignorado — a fatura já é capturada pelo gateway de
+  // contas, só faltava não descartar a conta antes de registrá-la).
   async readCashSources(itemId: string): Promise<HistorySource[]> {
     const client = await this.pluggyItemCredentialResolver.clientFor(itemId)
     const sources: HistorySource[] = []
 
     for await (const page of this.pluggyAccountsGateway.fetchAccountPages(itemId, client)) {
       for (const account of page.results) {
-        if (account.type !== 'BANK') {
+        if (account.type !== 'BANK' && account.type !== 'CREDIT') {
           continue
         }
-        await this.pluggyAccountRep.save(account)
+        // Log bruto inserido junto do registro principal, na mesma transação (change
+        // pluggy-complete-data-capture, spec pluggy-raw-payload-audit).
+        await this.startProcess()
+        try {
+          await this.pluggyAccountRep.save(account)
+          await this.pluggyAccountRawRep.save({
+            itemId,
+            accountId: account.accountId,
+            rawPayload: account.raw,
+            capturedAt: new Date(),
+          })
+          await this.terminateProcess()
+        } catch (err) {
+          await this.cancelProcess()
+          throw err
+        }
         sources.push({ kind: 'ACCOUNT', referenceId: account.accountId, updatedAt: account.providerUpdatedAt })
       }
     }
@@ -147,9 +173,27 @@ export default class LoadPluggyHistoryImpl
           }
         }
 
-        await this.pluggyAccountTransactionRep.saveMany(
-          page.results.map((transaction) => ({ ...transaction, itemId })),
-        )
+        // Log bruto inserido junto do registro principal, na mesma transação, por transação (change
+        // pluggy-complete-data-capture, spec pluggy-raw-payload-audit) — não muda a semântica
+        // existente de "cada página persistida antes do yield" (D5/D6), só garante que a linha
+        // principal e sua bruta nascem ou morrem juntas.
+        for (const transaction of page.results) {
+          await this.startProcess()
+          try {
+            await this.pluggyAccountTransactionRep.save({ ...transaction, itemId })
+            await this.pluggyAccountTransactionRawRep.save({
+              itemId,
+              accountId: transaction.accountId,
+              transactionId: transaction.transactionId,
+              rawPayload: transaction.raw,
+              capturedAt: new Date(),
+            })
+            await this.terminateProcess()
+          } catch (err) {
+            await this.cancelProcess()
+            throw err
+          }
+        }
         yield summarize(page.results.map((transaction) => transaction.date))
       }
       return
@@ -159,9 +203,27 @@ export default class LoadPluggyHistoryImpl
       source.referenceId,
       client,
     )) {
-      await this.pluggyInvestmentTransactionRep.saveMany(
-        page.results.map((transaction) => ({ ...transaction, itemId, investmentId: source.referenceId })),
-      )
+      for (const transaction of page.results) {
+        await this.startProcess()
+        try {
+          await this.pluggyInvestmentTransactionRep.save({
+            ...transaction,
+            itemId,
+            investmentId: source.referenceId,
+          })
+          await this.pluggyInvestmentTransactionRawRep.save({
+            itemId,
+            investmentId: source.referenceId,
+            transactionId: transaction.transactionId,
+            rawPayload: transaction.raw,
+            capturedAt: new Date(),
+          })
+          await this.terminateProcess()
+        } catch (err) {
+          await this.cancelProcess()
+          throw err
+        }
+      }
       yield summarize(page.results.map((transaction) => transaction.date))
     }
   }

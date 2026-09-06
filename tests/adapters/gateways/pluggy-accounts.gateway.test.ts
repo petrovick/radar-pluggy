@@ -260,4 +260,51 @@ describe('PluggyAccountsGateway', () => {
       details: { field: 'creditData.status' },
     })
   })
+
+  // Change pluggy-complete-data-capture, spec pluggy-account: campos antes descartados aqui mesmo.
+  it('lê taxNumber, bankData e disaggregatedCreditLimits quando presentes', async () => {
+    const client = clientReturning(
+      envelope([
+        validAccountPayload({
+          type: 'CREDIT',
+          taxNumber: '123.456.789-00',
+          bankData: null,
+          creditData: {
+            disaggregatedCreditLimits: [
+              { creditLineLimitType: 'LIMITE_CREDITO_TOTAL', consolidationType: 'CONSOLIDADO', usedAmount: 500 },
+            ],
+          },
+        }),
+      ]),
+    )
+
+    const [account] = await collectAccounts(gateway.fetchAccountPages('item-1', client))
+    expect(account?.taxNumber).toBe('123.456.789-00')
+    expect(account?.disaggregatedCreditLimits).toEqual([
+      { creditLineLimitType: 'LIMITE_CREDITO_TOTAL', consolidationType: 'CONSOLIDADO', usedAmount: 500 },
+    ])
+  })
+
+  it('lê bankData inteiro de conta BANK', async () => {
+    const client = clientReturning(
+      envelope([
+        validAccountPayload({
+          type: 'BANK',
+          bankData: { closingBalance: 1000.5, hasReservedBalance: true, reservedBalances: [] },
+        }),
+      ]),
+    )
+
+    const [account] = await collectAccounts(gateway.fetchAccountPages('item-1', client))
+    expect(account?.bankData).toEqual({ closingBalance: 1000.5, hasReservedBalance: true, reservedBalances: [] })
+  })
+
+  it('conta sem taxNumber/bankData/disaggregatedCreditLimits mantém os três undefined', async () => {
+    const client = clientReturning(envelope([validAccountPayload()]))
+
+    const [account] = await collectAccounts(gateway.fetchAccountPages('item-1', client))
+    expect(account?.taxNumber).toBeUndefined()
+    expect(account?.bankData).toBeUndefined()
+    expect(account?.disaggregatedCreditLimits).toBeUndefined()
+  })
 })

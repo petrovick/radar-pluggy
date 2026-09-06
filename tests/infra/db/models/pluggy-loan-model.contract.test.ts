@@ -10,6 +10,9 @@ const require = createRequire(import.meta.url)
 const migration = require('../../../../src/infra/db/migrations/20260905100000-criar-pluggy-connector-loans.cjs') as {
   up: (queryInterface: QueryInterface, sequelizeLib: typeof Sequelize) => Promise<void>
 }
+const fullCaptureMigration = require('../../../../src/infra/db/migrations/20260906180400-adicionar-campos-completos-em-pluggy-connector-loans.cjs') as {
+  up: (queryInterface: QueryInterface, sequelizeLib: typeof Sequelize) => Promise<void>
+}
 
 describe('contrato: model factory de pluggy_connector_loans vs. migration real', () => {
   const sequelize = createDatabaseConnection(testDatabaseConfig())
@@ -19,6 +22,10 @@ describe('contrato: model factory de pluggy_connector_loans vs. migration real',
     const tables = await queryInterface.showAllTables()
     if (!tables.includes('pluggy_connector_loans')) {
       await migration.up(queryInterface, Sequelize)
+    }
+    const cols = await queryInterface.describeTable('pluggy_connector_loans')
+    if (!cols.ipoc_code) {
+      await fullCaptureMigration.up(queryInterface, Sequelize)
     }
   })
 

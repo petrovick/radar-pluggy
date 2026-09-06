@@ -27,6 +27,7 @@ export interface SavePluggyAccountTransactionInput {
   sourceOrder?: number | undefined
   merchant?: Record<string, unknown> | undefined
   paymentData?: Record<string, unknown> | undefined
+  creditCardMetadata?: Record<string, unknown> | undefined
   providerCreatedAt: Date
   providerUpdatedAt: Date
 }
@@ -67,6 +68,7 @@ export class PluggyAccountTransactionRep {
         sourceOrder: input.sourceOrder,
         merchant: input.merchant,
         paymentData: input.paymentData,
+        creditCardMetadata: input.creditCardMetadata,
       }),
     })
     const now = new Date()
@@ -134,6 +136,7 @@ function toRow(transaction: PluggyAccountTransaction, now: Date): PluggyAccountT
     source_order: transaction.getSourceOrder() ?? null,
     merchant: transaction.getMerchant() ?? null,
     payment_data: transaction.getPaymentData() ?? null,
+    credit_card_metadata: transaction.getCreditCardMetadata() ?? null,
     provider_created_at: transaction.getProviderCreatedAt(),
     provider_updated_at: transaction.getProviderUpdatedAt(),
     created_at: now,
@@ -167,6 +170,7 @@ export function toEntity(row: PluggyAccountTransactionRow): PluggyAccountTransac
       sourceOrder: row.source_order !== null ? row.source_order : undefined,
       merchant: row.merchant ?? undefined,
       paymentData: row.payment_data ?? undefined,
+      creditCardMetadata: row.credit_card_metadata ?? undefined,
     }),
   })
 }

@@ -41,6 +41,16 @@ describe('PluggyAccountRep', () => {
       }
       await creditMigration.up(queryInterface, Sequelize)
     }
+    const colsAfterCredit = await queryInterface.describeTable('pluggy_connector_accounts')
+    if (!colsAfterCredit.tax_number) {
+      const { createRequire } = await import('node:module')
+      const require = createRequire(import.meta.url)
+      const { Sequelize } = await import('sequelize')
+      const fullCaptureMigration = require('../../../src/infra/db/migrations/20260906180100-adicionar-campos-completos-em-pluggy-connector-accounts.cjs') as {
+        up: (queryInterface: unknown, sequelizeLib: typeof Sequelize) => Promise<void>
+      }
+      await fullCaptureMigration.up(queryInterface, Sequelize)
+    }
   })
 
   afterEach(async () => {
@@ -179,5 +189,39 @@ describe('PluggyAccountRep', () => {
     expect(found?.getIsLimitFlexible()).toBeUndefined()
     expect(found?.getStatus()).toBeUndefined()
     expect(found?.getHolderType()).toBeUndefined()
+  })
+
+  // Change pluggy-complete-data-capture, spec pluggy-account: campos antes descartados no gateway.
+  it('salva e recupera taxNumber, bankData e disaggregatedCreditLimits', async () => {
+    const itemId = randomUUID()
+    const accountId = randomUUID()
+    itemIdsToCleanup.push(itemId)
+
+    await repository.save({
+      ...baseInput(itemId, accountId),
+      taxNumber: '123.456.789-00',
+      bankData: { closingBalance: 1000.5, hasReservedBalance: false },
+      disaggregatedCreditLimits: [{ creditLineLimitType: 'LIMITE_CREDITO_TOTAL', usedAmount: 500 }],
+    })
+
+    const found = await repository.findByAccountId(accountId)
+    expect(found?.getTaxNumber()).toBe('123.456.789-00')
+    expect(found?.getBankData()).toEqual({ closingBalance: 1000.5, hasReservedBalance: false })
+    expect(found?.getDisaggregatedCreditLimits()).toEqual([
+      { creditLineLimitType: 'LIMITE_CREDITO_TOTAL', usedAmount: 500 },
+    ])
+  })
+
+  it('conta sem taxNumber/bankData/disaggregatedCreditLimits grava e recupera com os três indefinidos', async () => {
+    const itemId = randomUUID()
+    const accountId = randomUUID()
+    itemIdsToCleanup.push(itemId)
+
+    await repository.save(baseInput(itemId, accountId))
+
+    const found = await repository.findByAccountId(accountId)
+    expect(found?.getTaxNumber()).toBeUndefined()
+    expect(found?.getBankData()).toBeUndefined()
+    expect(found?.getDisaggregatedCreditLimits()).toBeUndefined()
   })
 })

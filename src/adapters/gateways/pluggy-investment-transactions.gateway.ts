@@ -32,6 +32,9 @@ export interface PluggyInvestmentTransactionDto {
   other: Decimal | undefined
   iof: Decimal | undefined
   iofProvision: Decimal | undefined
+  // Payload bruto, exatamente como recebido, capturado antes desta validação (change
+  // pluggy-complete-data-capture, spec pluggy-raw-payload-audit).
+  raw: Record<string, unknown>
 }
 
 export interface PluggyInvestmentTransactionsPageDto {
@@ -190,6 +193,7 @@ export class PluggyInvestmentTransactionsGateway {
       other: optionalDecimal(expenses.other, investmentId, index, 'expenses.other'),
       iof: optionalDecimal(expenses.iof, investmentId, index, 'expenses.iof'),
       iofProvision: optionalDecimal(expenses.iofProvision, investmentId, index, 'expenses.iofProvision'),
+      raw: tx,
     }
   }
 }

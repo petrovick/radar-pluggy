@@ -30,6 +30,16 @@ describe('PluggyLoanRep.save', () => {
       }
       await migration.up(queryInterface, Sequelize)
     }
+    const cols = await queryInterface.describeTable('pluggy_connector_loans')
+    if (!cols.ipoc_code) {
+      const { createRequire } = await import('node:module')
+      const require = createRequire(import.meta.url)
+      const { Sequelize } = await import('sequelize')
+      const fullCaptureMigration = require('../../../src/infra/db/migrations/20260906180400-adicionar-campos-completos-em-pluggy-connector-loans.cjs') as {
+        up: (queryInterface: unknown, sequelizeLib: typeof Sequelize) => Promise<void>
+      }
+      await fullCaptureMigration.up(queryInterface, Sequelize)
+    }
   })
 
   afterEach(async () => {
@@ -62,6 +72,21 @@ describe('PluggyLoanRep.save', () => {
       dueInstallments: undefined,
       pastDueInstallments: undefined,
       outstandingBalance: undefined,
+      ipocCode: undefined,
+      disbursementDates: undefined,
+      firstInstallmentDueDate: undefined,
+      cet: undefined,
+      installmentPeriodicity: undefined,
+      installmentPeriodicityAdditionalInfo: undefined,
+      amortizationScheduled: undefined,
+      amortizationScheduledAdditionalInfo: undefined,
+      cnpjConsignee: undefined,
+      interestRates: undefined,
+      contractedFees: undefined,
+      contractedFinanceCharges: undefined,
+      warranties: undefined,
+      installments: undefined,
+      payments: undefined,
     }
   }
 
@@ -125,6 +150,59 @@ describe('PluggyLoanRep.save', () => {
     expect(row?.get('contract_amount')).toBeNull()
     expect(row?.get('outstanding_balance')).toBeNull()
     expect(row?.get('total_installments')).toBeNull()
+  })
+
+  // Change pluggy-complete-data-capture, spec pluggy-loan: schema completo do contrato, revertendo
+  // o corte antes documentado no gateway.
+  it('grava schema completo do contrato, com listas e objetos aninhados', async () => {
+    const loanId = randomUUID()
+    const itemId = randomUUID()
+    loanIdsToCleanup.push(loanId)
+
+    await repository.save({
+      ...baseInput(loanId, itemId),
+      ipocCode: 'IPOC-123',
+      disbursementDates: [new Date('2026-01-01T00:00:00.000Z')],
+      firstInstallmentDueDate: new Date('2026-02-01T00:00:00.000Z'),
+      cet: new Decimal('15.5'),
+      installmentPeriodicity: 'MONTHLY',
+      amortizationScheduled: 'SAC',
+      cnpjConsignee: '12.345.678/0001-00',
+      interestRates: [{ taxType: 'NOMINAL', preFixedRate: 0.015 }],
+      contractedFees: [{ name: 'Tarifa de abertura', amount: 50 }],
+      contractedFinanceCharges: [{ type: 'IOF', rate: 0.0038 }],
+      warranties: [{ type: 'AVAL', amount: 10000 }],
+      installments: { typeNumberOfInstallments: 'MONTH', totalNumberOfInstallments: 24 },
+      payments: { contractOutstandingBalance: 8000, releases: [] },
+    })
+
+    const row = await model.findOne({ where: { loan_id: loanId } })
+    expect(row?.get('ipoc_code')).toBe('IPOC-123')
+    expect(row?.get('disbursement_dates')).toEqual(['2026-01-01T00:00:00.000Z'])
+    expect(row?.get('first_installment_due_date')).toEqual(new Date('2026-02-01T00:00:00.000Z'))
+    expect(row?.get('cet')).toBe('15.50000000')
+    expect(row?.get('installment_periodicity')).toBe('MONTHLY')
+    expect(row?.get('amortization_scheduled')).toBe('SAC')
+    expect(row?.get('cnpj_consignee')).toBe('12.345.678/0001-00')
+    expect(row?.get('interest_rates')).toEqual([{ taxType: 'NOMINAL', preFixedRate: 0.015 }])
+    expect(row?.get('contracted_fees')).toEqual([{ name: 'Tarifa de abertura', amount: 50 }])
+    expect(row?.get('contracted_finance_charges')).toEqual([{ type: 'IOF', rate: 0.0038 }])
+    expect(row?.get('warranties')).toEqual([{ type: 'AVAL', amount: 10000 }])
+    expect(row?.get('installments')).toEqual({ typeNumberOfInstallments: 'MONTH', totalNumberOfInstallments: 24 })
+    expect(row?.get('payments')).toEqual({ contractOutstandingBalance: 8000, releases: [] })
+  })
+
+  it('empréstimo sem schema completo grava e recupera com os campos indefinidos', async () => {
+    const loanId = randomUUID()
+    const itemId = randomUUID()
+    loanIdsToCleanup.push(loanId)
+
+    await repository.save(baseInput(loanId, itemId))
+
+    const row = await model.findOne({ where: { loan_id: loanId } })
+    expect(row?.get('ipoc_code')).toBeNull()
+    expect(row?.get('interest_rates')).toBeNull()
+    expect(row?.get('installments')).toBeNull()
   })
 
   it('recusa gravação sem productName antes de tocar o banco', async () => {

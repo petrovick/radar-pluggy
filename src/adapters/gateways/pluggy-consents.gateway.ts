@@ -8,6 +8,13 @@ export interface PluggyConsentDto {
   grantedAt: Date
   expiresAt: Date | undefined
   revokedAt: Date | undefined
+  // Escopo autorizado (change pluggy-complete-data-capture, spec pluggy-consent) — antes nunca lido
+  // aqui.
+  products: string[] | undefined
+  openFinancePermissionsGranted: string[] | undefined
+  // Payload bruto, exatamente como recebido, capturado antes desta validação (change
+  // pluggy-complete-data-capture, spec pluggy-raw-payload-audit).
+  raw: Record<string, unknown>
 }
 
 interface PluggyConsentsResponse {
@@ -68,6 +75,14 @@ export class PluggyConsentsGateway {
       grantedAt: requireDate(consent.createdAt, itemId, index, 'createdAt'),
       expiresAt: optionalDate(consent.expiresAt, itemId, index, 'expiresAt'),
       revokedAt: optionalDate(consent.revokedAt, itemId, index, 'revokedAt'),
+      products: optionalStringArray(consent.products, itemId, index, 'products'),
+      openFinancePermissionsGranted: optionalStringArray(
+        consent.openFinancePermissionsGranted,
+        itemId,
+        index,
+        'openFinancePermissionsGranted',
+      ),
+      raw: consent,
     }
   }
 }
@@ -87,6 +102,18 @@ function requireDate(value: unknown, itemId: string, index: number, field: strin
     throw new ApplicationError('PLUGGY_CONSENT_RESPONSE_INVALID', { itemId, index, field })
   }
   return date
+}
+
+// Lista de string simples (`products`/`openFinancePermissionsGranted`) — ausente é ausente; presente
+// com item que não é string é resposta mal formada, recusa nomeada.
+function optionalStringArray(value: unknown, itemId: string, index: number, field: string): string[] | undefined {
+  if (value === undefined || value === null) {
+    return undefined
+  }
+  if (!Array.isArray(value) || value.some((entry) => typeof entry !== 'string')) {
+    throw new ApplicationError('PLUGGY_CONSENT_RESPONSE_INVALID', { itemId, index, field })
+  }
+  return value as string[]
 }
 
 // Ausente é ausente (consentimento sem prazo de expiração/revogação); presente com formato ilegível

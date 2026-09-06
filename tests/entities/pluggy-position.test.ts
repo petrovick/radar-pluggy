@@ -39,6 +39,46 @@ describe('PluggyPosition', () => {
     expect(position.getInstitutionName()).toBe('Banco Exemplo S/A')
   })
 
+  // Change pluggy-complete-data-capture, spec pluggy-position-sync: campos antes descartados no
+  // gateway, agora capturados pela entity.
+  it('aceita criação com os campos de captura completa presentes', () => {
+    const position = PluggyPosition.create({
+      ...validProps(),
+      issuerCnpj: '12.345.678/0001-00',
+      number: 'CDB-9988',
+      amountWithdrawal: new Decimal('1180'),
+      amountProfit: new Decimal('42.1'),
+      dueDate: new Date('2028-01-01T00:00:00.000Z'),
+      issuer: 'Banco X',
+      issueDate: new Date('2026-01-01T00:00:00.000Z'),
+      purchaseDate: new Date('2026-01-02T00:00:00.000Z'),
+      rate: new Decimal('100.5'),
+      rateType: 'CDI',
+      fixedAnnualRate: new Decimal('12.5'),
+      lastMonthRate: new Decimal('1.02'),
+      annualRate: new Decimal('12.8'),
+      lastTwelveMonthsRate: new Decimal('12.9'),
+      owner: 'Fulano de Tal',
+      metadata: { taxRegime: 'REGRESSIVO', proposalNumber: '123', processNumber: '456' },
+    })
+    expect(position.getDueDate()).toEqual(new Date('2028-01-01T00:00:00.000Z'))
+    expect(position.getRate()).toEqual(new Decimal('100.5'))
+    expect(position.getAmountProfit()).toEqual(new Decimal('42.1'))
+    expect(position.getMetadata()).toEqual({
+      taxRegime: 'REGRESSIVO',
+      proposalNumber: '123',
+      processNumber: '456',
+    })
+  })
+
+  it('aceita criação sem nenhum campo de captura completa', () => {
+    const position = PluggyPosition.create(validProps())
+    expect(position.getDueDate()).toBeUndefined()
+    expect(position.getRate()).toBeUndefined()
+    expect(position.getAmountProfit()).toBeUndefined()
+    expect(position.getMetadata()).toBeUndefined()
+  })
+
   it.each([
     ['investmentId', 'PLUGGY_POSITION_INVESTMENT_ID_MISSING'],
     ['itemId', 'PLUGGY_POSITION_ITEM_ID_MISSING'],

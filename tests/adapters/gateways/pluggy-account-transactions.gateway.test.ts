@@ -167,4 +167,30 @@ describe('PluggyAccountTransactionsGateway', () => {
       details: { pluggyCode: 502 },
     })
   })
+
+  // Change pluggy-complete-data-capture, spec pluggy-transaction-history: campo antes descartado.
+  it('lê creditCardMetadata inteiro quando presente', async () => {
+    const client = clientReturning({
+      results: [
+        validTransactionPayload('acc-1', {
+          creditCardMetadata: { installmentNumber: 1, totalInstallments: 3, billForecastDate: '2026-10' },
+        }),
+      ],
+      next: null,
+    })
+
+    const page = await gateway.fetchTransactionsPage('acc-1', client)
+    expect(page.results[0]?.creditCardMetadata).toEqual({
+      installmentNumber: 1,
+      totalInstallments: 3,
+      billForecastDate: '2026-10',
+    })
+  })
+
+  it('transação de conta corrente sem creditCardMetadata mantém o campo indefinido', async () => {
+    const client = clientReturning({ results: [validTransactionPayload()], next: null })
+
+    const page = await gateway.fetchTransactionsPage('acc-1', client)
+    expect(page.results[0]?.creditCardMetadata).toBeUndefined()
+  })
 })

@@ -38,6 +38,23 @@ function investment(overrides: Partial<PluggyInvestmentInput> = {}): PluggyInves
     status: 'ACTIVE',
     institutionName: undefined,
     institutionNumber: undefined,
+    issuerCnpj: undefined,
+    number: undefined,
+    amountWithdrawal: undefined,
+    amountProfit: undefined,
+    dueDate: undefined,
+    issuer: undefined,
+    issueDate: undefined,
+    purchaseDate: undefined,
+    rate: undefined,
+    rateType: undefined,
+    fixedAnnualRate: undefined,
+    lastMonthRate: undefined,
+    annualRate: undefined,
+    lastTwelveMonthsRate: undefined,
+    owner: undefined,
+    metadata: undefined,
+    raw: {},
     ...overrides,
   }
 }
@@ -66,6 +83,22 @@ function loan(overrides: Partial<PluggyLoanInput> = {}): PluggyLoanInput {
     dueInstallments: 19,
     pastDueInstallments: 0,
     outstandingBalance: new Decimal('8000.00'),
+    ipocCode: undefined,
+    disbursementDates: undefined,
+    firstInstallmentDueDate: undefined,
+    cet: undefined,
+    installmentPeriodicity: undefined,
+    installmentPeriodicityAdditionalInfo: undefined,
+    amortizationScheduled: undefined,
+    amortizationScheduledAdditionalInfo: undefined,
+    cnpjConsignee: undefined,
+    interestRates: undefined,
+    contractedFees: undefined,
+    contractedFinanceCharges: undefined,
+    warranties: undefined,
+    installments: undefined,
+    payments: undefined,
+    raw: {},
     ...overrides,
   }
 }
@@ -109,6 +142,7 @@ function buildGateway(overrides: Partial<SyncPluggyPositionGateway> = {}): {
       status: 'UPDATED',
       executionStatus: 'SUCCESS',
       lastUpdatedAt: '2026-09-03T04:40:14.026Z',
+      raw: {},
     }),
     readConsentStatus: async () => ({
       kind: 'ACTIVE',
@@ -116,6 +150,9 @@ function buildGateway(overrides: Partial<SyncPluggyPositionGateway> = {}): {
       grantedAt: new Date('2026-01-01T00:00:00.000Z'),
       expiresAt: undefined,
       revokedAt: undefined,
+      products: undefined,
+      openFinancePermissionsGranted: undefined,
+      raw: {},
     }),
     saveConsentStatus: async (_itemId, status) => {
       calls.consentStatuses.push(status)
@@ -263,6 +300,9 @@ describe('SyncPluggyPositionInteractor', () => {
         grantedAt: new Date('2025-01-01T00:00:00.000Z'),
         expiresAt: new Date('2026-01-01T00:00:00.000Z'),
         revokedAt: undefined,
+        products: undefined,
+        openFinancePermissionsGranted: undefined,
+        raw: {},
       }),
     })
 
@@ -283,6 +323,9 @@ describe('SyncPluggyPositionInteractor', () => {
         grantedAt: new Date('2025-01-01T00:00:00.000Z'),
         expiresAt: undefined,
         revokedAt: new Date('2026-02-01T00:00:00.000Z'),
+        products: undefined,
+        openFinancePermissionsGranted: undefined,
+        raw: {},
       }),
     })
 
@@ -309,7 +352,7 @@ describe('SyncPluggyPositionInteractor', () => {
 
   it('executionStatus diferente de SUCCESS não sincroniza', async () => {
     const { gateway, calls } = buildGateway({
-      readCurrentItemState: async () => ({ status: 'UPDATING', executionStatus: 'PARTIAL_SUCCESS', lastUpdatedAt: undefined }),
+      readCurrentItemState: async () => ({ status: 'UPDATING', executionStatus: 'PARTIAL_SUCCESS', lastUpdatedAt: undefined, raw: {} }),
     })
 
     const result = await buildInteractor(gateway).execute({ itemId: ITEM_ID })
@@ -320,7 +363,7 @@ describe('SyncPluggyPositionInteractor', () => {
 
   it('SUCCESS sem lastUpdatedAt é recusa nomeada, não portão fechado em silêncio', async () => {
     const { gateway } = buildGateway({
-      readCurrentItemState: async () => ({ status: 'UPDATED', executionStatus: 'SUCCESS', lastUpdatedAt: undefined }),
+      readCurrentItemState: async () => ({ status: 'UPDATED', executionStatus: 'SUCCESS', lastUpdatedAt: undefined, raw: {} }),
     })
 
     const result = await buildInteractor(gateway).execute({ itemId: ITEM_ID })

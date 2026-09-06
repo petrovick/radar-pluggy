@@ -30,6 +30,9 @@ export interface SavePluggyAccountInput {
   isLimitFlexible?: boolean | undefined
   status?: 'ACTIVE' | 'BLOCKED' | 'CANCELLED' | undefined
   holderType?: 'MAIN' | 'ADDITIONAL' | undefined
+  taxNumber?: string | undefined
+  bankData?: Record<string, unknown> | undefined
+  disaggregatedCreditLimits?: Record<string, unknown>[] | undefined
 }
 
 export class PluggyAccountRep {
@@ -69,6 +72,9 @@ export class PluggyAccountRep {
         isLimitFlexible: input.isLimitFlexible,
         status: input.status,
         holderType: input.holderType,
+        taxNumber: input.taxNumber,
+        bankData: input.bankData,
+        disaggregatedCreditLimits: input.disaggregatedCreditLimits,
       }),
     })
     const now = new Date()
@@ -132,6 +138,9 @@ function toRow(account: PluggyAccount, now: Date): PluggyAccountRow {
     is_limit_flexible: account.getIsLimitFlexible() ?? null,
     status: account.getStatus() ?? null,
     holder_type: account.getHolderType() ?? null,
+    tax_number: account.getTaxNumber() ?? null,
+    bank_data: account.getBankData() ?? null,
+    disaggregated_credit_limits: account.getDisaggregatedCreditLimits() ?? null,
     created_at: now,
     updated_at: now,
   } as PluggyAccountRow
@@ -165,6 +174,9 @@ export function toEntity(row: PluggyAccountRow): PluggyAccount {
       isLimitFlexible: row.is_limit_flexible ?? undefined,
       status: (row.status ?? undefined) as 'ACTIVE' | 'BLOCKED' | 'CANCELLED' | undefined,
       holderType: (row.holder_type ?? undefined) as 'MAIN' | 'ADDITIONAL' | undefined,
+      taxNumber: row.tax_number ?? undefined,
+      bankData: row.bank_data ?? undefined,
+      disaggregatedCreditLimits: row.disaggregated_credit_limits ?? undefined,
     }),
   })
 }

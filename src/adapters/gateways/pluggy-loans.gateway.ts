@@ -6,22 +6,10 @@ import { pluggySdkError, toDateOrUndefined } from './pluggy-client.gateway.js'
 // Mesmo shape que PluggyLoanRep.save espera — a fronteira de conversão pra Decimal (fronteira-pluggy
 // regra 1) acontece aqui, uma vez, não em quem consome esta lista.
 //
-// Subconjunto deliberado do schema `Loan` da Pluggy (~25 campos, muitos aninhados: taxas, garantias,
-// parcelas balão, liberações de pagamento). Este produto precisa hoje só da visão patrimonial de
-// "quanto eu devo" — capturar tudo seria overengineering para dado de auditoria de contrato do Open
-// Banking Brasil que ninguém consome. Fora de escopo, de propósito, e por isso:
-//   - `ipocCode`: identificação padronizada de contrato, sem consumidor
-//   - `disbursementDates`: datas de liberação de parcelas do contrato, auditoria
-//   - `installmentPeriodicity`/`installmentPeriodicityAdditionalInfo`: frequência de parcela, auditoria
-//   - `firstInstallmentDueDate`: redundante com o cronograma de parcelas, auditoria
-//   - `CET`: custo efetivo total anualizado, indicador de comparação de oferta, não de saldo devedor
-//   - `amortizationScheduled`/`amortizationScheduledAdditionalInfo`: sistema de amortização, auditoria
-//   - `cnpjConsignee`: CNPJ do consignante, dado de auditoria de contrato consignado
-//   - `interestRates`: lista de taxas de juros pactuadas, auditoria
-//   - `contractedFees`/`contractedFinanceCharges`: tarifas e encargos pactuados, auditoria
-//   - `warranties`: garantias do contrato, auditoria
-//   - `installments.balloonPayments`: parcelas balão não regulares, auditoria
-//   - `payments.releases`: liberações de pagamento fora da parcela, auditoria
+// Captura integral do schema `Loan` (change pluggy-complete-data-capture, spec pluggy-loan) — reverte
+// o corte antes documentado neste arquivo. Listas/objetos aninhados complexos (`interestRates`,
+// `contractedFees`, `contractedFinanceCharges`, `warranties`, `installments`, `payments`) são
+// carregados opacos, mesmo tratamento de `merchant`/`paymentData` em pluggy-account-transaction.ts.
 export interface PluggyLoanDto {
   loanId: string
   itemId: string
@@ -42,6 +30,24 @@ export interface PluggyLoanDto {
   pastDueInstallments: number | undefined
   // `payments.contractOutstandingBalance` — o dado central: o saldo devedor atual.
   outstandingBalance: Decimal | undefined
+  ipocCode: string | undefined
+  disbursementDates: Date[] | undefined
+  firstInstallmentDueDate: Date | undefined
+  cet: Decimal | undefined
+  installmentPeriodicity: string | undefined
+  installmentPeriodicityAdditionalInfo: string | undefined
+  amortizationScheduled: string | undefined
+  amortizationScheduledAdditionalInfo: string | undefined
+  cnpjConsignee: string | undefined
+  interestRates: Record<string, unknown>[] | undefined
+  contractedFees: Record<string, unknown>[] | undefined
+  contractedFinanceCharges: Record<string, unknown>[] | undefined
+  warranties: Record<string, unknown>[] | undefined
+  installments: Record<string, unknown> | undefined
+  payments: Record<string, unknown> | undefined
+  // Payload bruto, exatamente como recebido, capturado antes desta validação (change
+  // pluggy-complete-data-capture, spec pluggy-raw-payload-audit).
+  raw: Record<string, unknown>
 }
 
 export interface PluggyLoansPageDto {
@@ -190,6 +196,37 @@ export class PluggyLoansGateway {
         index,
         'payments.contractOutstandingBalance',
       ),
+      ipocCode: optionalString(loan.ipocCode, itemId, index, 'ipocCode'),
+      disbursementDates: optionalDateArray(loan.disbursementDates, itemId, index, 'disbursementDates'),
+      firstInstallmentDueDate: optionalDate(loan.firstInstallmentDueDate, itemId, index, 'firstInstallmentDueDate'),
+      cet: optionalDecimal(loan.CET, itemId, index, 'CET'),
+      installmentPeriodicity: optionalString(loan.installmentPeriodicity, itemId, index, 'installmentPeriodicity'),
+      installmentPeriodicityAdditionalInfo: optionalString(
+        loan.installmentPeriodicityAdditionalInfo,
+        itemId,
+        index,
+        'installmentPeriodicityAdditionalInfo',
+      ),
+      amortizationScheduled: optionalString(loan.amortizationScheduled, itemId, index, 'amortizationScheduled'),
+      amortizationScheduledAdditionalInfo: optionalString(
+        loan.amortizationScheduledAdditionalInfo,
+        itemId,
+        index,
+        'amortizationScheduledAdditionalInfo',
+      ),
+      cnpjConsignee: optionalString(loan.cnpjConsignee, itemId, index, 'cnpjConsignee'),
+      interestRates: optionalObjectArray(loan.interestRates, itemId, index, 'interestRates'),
+      contractedFees: optionalObjectArray(loan.contractedFees, itemId, index, 'contractedFees'),
+      contractedFinanceCharges: optionalObjectArray(
+        loan.contractedFinanceCharges,
+        itemId,
+        index,
+        'contractedFinanceCharges',
+      ),
+      warranties: optionalObjectArray(loan.warranties, itemId, index, 'warranties'),
+      installments: optionalObject(loan.installments, itemId, index, 'installments'),
+      payments: optionalObject(loan.payments, itemId, index, 'payments'),
+      raw: loan,
     }
   }
 }
@@ -243,6 +280,49 @@ function optionalInt(value: unknown, itemId: string, index: number, field: strin
     throw new ApplicationError('PLUGGY_LOAN_RESPONSE_INVALID', { itemId, index, field })
   }
   return value
+}
+
+function optionalDateArray(value: unknown, itemId: string, index: number, field: string): Date[] | undefined {
+  if (value === undefined || value === null) {
+    return undefined
+  }
+  if (!Array.isArray(value)) {
+    throw new ApplicationError('PLUGGY_LOAN_RESPONSE_INVALID', { itemId, index, field })
+  }
+  return value.map((entry, entryIndex) => {
+    const date = toDateOrUndefined(entry)
+    if (date === undefined) {
+      throw new ApplicationError('PLUGGY_LOAN_RESPONSE_INVALID', { itemId, index, field: `${field}[${entryIndex}]` })
+    }
+    return date
+  })
+}
+
+// Objeto/lista aninhada complexa (taxas, garantias, parcelas, pagamentos) carregada opaca — mesmo
+// tratamento de `merchant`/`paymentData` em pluggy-account-transaction.ts.
+function optionalObject(value: unknown, itemId: string, index: number, field: string): Record<string, unknown> | undefined {
+  if (value === undefined || value === null) {
+    return undefined
+  }
+  if (typeof value !== 'object' || Array.isArray(value)) {
+    throw new ApplicationError('PLUGGY_LOAN_RESPONSE_INVALID', { itemId, index, field })
+  }
+  return value as Record<string, unknown>
+}
+
+function optionalObjectArray(
+  value: unknown,
+  itemId: string,
+  index: number,
+  field: string,
+): Record<string, unknown>[] | undefined {
+  if (value === undefined || value === null) {
+    return undefined
+  }
+  if (!Array.isArray(value)) {
+    throw new ApplicationError('PLUGGY_LOAN_RESPONSE_INVALID', { itemId, index, field })
+  }
+  return value as Record<string, unknown>[]
 }
 
 // `installments`/`payments` no schema `Loan` podem vir `null` inteiros — subcampo achatado vira

@@ -9,6 +9,8 @@ function consent(overrides: Partial<Parameters<typeof PluggyConsent.create>[0]> 
     grantedAt: new Date('2026-01-01T00:00:00.000Z'),
     expiresAt: undefined,
     revokedAt: undefined,
+    products: undefined,
+    openFinancePermissionsGranted: undefined,
     ...overrides,
   })
 }
@@ -36,6 +38,22 @@ describe('PluggyConsent', () => {
       revokedAt: new Date('2026-02-01T00:00:00.000Z'),
     })
     expect(c.statusAt(new Date('2026-03-01T00:00:00.000Z'))).toBe('REVOKED')
+  })
+
+  // Change pluggy-complete-data-capture, spec pluggy-consent: escopo autorizado, não só o prazo.
+  it('aceita criação com products e openFinancePermissionsGranted presentes', () => {
+    const c = consent({
+      products: ['ACCOUNTS', 'INVESTMENTS'],
+      openFinancePermissionsGranted: ['ACCOUNTS_READ', 'INVESTMENTS_READ'],
+    })
+    expect(c.getProducts()).toEqual(['ACCOUNTS', 'INVESTMENTS'])
+    expect(c.getOpenFinancePermissionsGranted()).toEqual(['ACCOUNTS_READ', 'INVESTMENTS_READ'])
+  })
+
+  it('consentimento sem products/permissions mantém os dois indefinidos', () => {
+    const c = consent()
+    expect(c.getProducts()).toBeUndefined()
+    expect(c.getOpenFinancePermissionsGranted()).toBeUndefined()
   })
 })
 

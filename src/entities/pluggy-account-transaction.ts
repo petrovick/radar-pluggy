@@ -23,6 +23,7 @@ const ALLOWED_CREATE_FIELDS = new Set([
   'sourceOrder',
   'merchant',
   'paymentData',
+  'creditCardMetadata',
   'providerCreatedAt',
   'providerUpdatedAt',
 ])
@@ -49,38 +50,73 @@ export interface CreatePluggyAccountTransactionProps {
   sourceOrder?: number | undefined
   merchant?: Record<string, unknown> | undefined
   paymentData?: Record<string, unknown> | undefined
+  // `CreditCardMetadata` inteiro (change pluggy-complete-data-capture, spec
+  // pluggy-transaction-history) — parcelamento, `billId`, `billForecastDate`, tipo de tarifa.
+  // Presente só quando a transação é de cartão de crédito; carregado opaco, mesmo tratamento de
+  // `merchant`/`paymentData`.
+  creditCardMetadata?: Record<string, unknown> | undefined
   // Obrigatórios: o spec de pluggy-transaction-history exige `createdAt`/`updatedAt` no extrato, e a
   // entidade é a fronteira que garante isso por si — não o gateway que hoje por acaso sempre envia.
   providerCreatedAt: Date
   providerUpdatedAt: Date
 }
 
+// Construtor recebe `props` por nome, não por posição: `merchant`, `paymentData` e
+// `creditCardMetadata` são três campos `Record<string, unknown> | undefined` — uma transposição
+// entre dois deles compilaria sem erro e gravaria dado de comerciante/pagamento/cartão trocado em
+// silêncio (mesmo raciocínio de `pluggy-account.ts`).
 export class PluggyAccountTransaction {
-  private constructor(
-    private readonly itemId: string,
-    private readonly accountId: string,
-    private readonly transactionId: string,
-    private readonly description: string,
-    private readonly descriptionRaw: string | undefined,
-    private readonly currencyCode: string,
-    private readonly amount: Decimal,
-    private readonly amountInAccountCurrency: Decimal | undefined,
-    private readonly balance: Decimal | undefined,
-    private readonly date: Date,
-    private readonly transactionType: string,
-    private readonly status: string,
-    private readonly categoryId: string | undefined,
-    private readonly category: string | undefined,
-    private readonly operationType: string | undefined,
-    private readonly operationTypeAdditionalInfo: string | undefined,
-    private readonly providerCode: string | undefined,
-    private readonly providerId: string | undefined,
-    private readonly sourceOrder: number | undefined,
-    private readonly merchant: Record<string, unknown> | undefined,
-    private readonly paymentData: Record<string, unknown> | undefined,
-    private readonly providerCreatedAt: Date,
-    private readonly providerUpdatedAt: Date,
-  ) {}
+  private readonly itemId: string
+  private readonly accountId: string
+  private readonly transactionId: string
+  private readonly description: string
+  private readonly descriptionRaw: string | undefined
+  private readonly currencyCode: string
+  private readonly amount: Decimal
+  private readonly amountInAccountCurrency: Decimal | undefined
+  private readonly balance: Decimal | undefined
+  private readonly date: Date
+  private readonly transactionType: string
+  private readonly status: string
+  private readonly categoryId: string | undefined
+  private readonly category: string | undefined
+  private readonly operationType: string | undefined
+  private readonly operationTypeAdditionalInfo: string | undefined
+  private readonly providerCode: string | undefined
+  private readonly providerId: string | undefined
+  private readonly sourceOrder: number | undefined
+  private readonly merchant: Record<string, unknown> | undefined
+  private readonly paymentData: Record<string, unknown> | undefined
+  private readonly creditCardMetadata: Record<string, unknown> | undefined
+  private readonly providerCreatedAt: Date
+  private readonly providerUpdatedAt: Date
+
+  private constructor(props: CreatePluggyAccountTransactionProps) {
+    this.itemId = props.itemId
+    this.accountId = props.accountId
+    this.transactionId = props.transactionId
+    this.description = props.description
+    this.descriptionRaw = props.descriptionRaw
+    this.currencyCode = props.currencyCode
+    this.amount = props.amount
+    this.amountInAccountCurrency = props.amountInAccountCurrency
+    this.balance = props.balance
+    this.date = props.date
+    this.transactionType = props.transactionType
+    this.status = props.status
+    this.categoryId = props.categoryId
+    this.category = props.category
+    this.operationType = props.operationType
+    this.operationTypeAdditionalInfo = props.operationTypeAdditionalInfo
+    this.providerCode = props.providerCode
+    this.providerId = props.providerId
+    this.sourceOrder = props.sourceOrder
+    this.merchant = props.merchant
+    this.paymentData = props.paymentData
+    this.creditCardMetadata = props.creditCardMetadata
+    this.providerCreatedAt = props.providerCreatedAt
+    this.providerUpdatedAt = props.providerUpdatedAt
+  }
 
   static create(props: CreatePluggyAccountTransactionProps): PluggyAccountTransaction {
     assertNoUnexpectedFields(props)
@@ -101,59 +137,11 @@ export class PluggyAccountTransaction {
     assertInstant(props.providerCreatedAt, 'PLUGGY_ACCOUNT_TRANSACTION_PROVIDER_CREATED_AT_MISSING', props.transactionId)
     assertInstant(props.providerUpdatedAt, 'PLUGGY_ACCOUNT_TRANSACTION_PROVIDER_UPDATED_AT_MISSING', props.transactionId)
 
-    return new PluggyAccountTransaction(
-      props.itemId,
-      props.accountId,
-      props.transactionId,
-      props.description,
-      props.descriptionRaw,
-      props.currencyCode,
-      props.amount,
-      props.amountInAccountCurrency,
-      props.balance,
-      props.date,
-      props.transactionType,
-      props.status,
-      props.categoryId,
-      props.category,
-      props.operationType,
-      props.operationTypeAdditionalInfo,
-      props.providerCode,
-      props.providerId,
-      props.sourceOrder,
-      props.merchant,
-      props.paymentData,
-      props.providerCreatedAt,
-      props.providerUpdatedAt,
-    )
+    return new PluggyAccountTransaction(props)
   }
 
   static reconstitute(props: CreatePluggyAccountTransactionProps): PluggyAccountTransaction {
-    return new PluggyAccountTransaction(
-      props.itemId,
-      props.accountId,
-      props.transactionId,
-      props.description,
-      props.descriptionRaw,
-      props.currencyCode,
-      props.amount,
-      props.amountInAccountCurrency,
-      props.balance,
-      props.date,
-      props.transactionType,
-      props.status,
-      props.categoryId,
-      props.category,
-      props.operationType,
-      props.operationTypeAdditionalInfo,
-      props.providerCode,
-      props.providerId,
-      props.sourceOrder,
-      props.merchant,
-      props.paymentData,
-      props.providerCreatedAt,
-      props.providerUpdatedAt,
-    )
+    return new PluggyAccountTransaction(props)
   }
 
   getItemId(): string { return this.itemId }
@@ -177,6 +165,7 @@ export class PluggyAccountTransaction {
   getSourceOrder(): number | undefined { return this.sourceOrder }
   getMerchant(): Record<string, unknown> | undefined { return this.merchant }
   getPaymentData(): Record<string, unknown> | undefined { return this.paymentData }
+  getCreditCardMetadata(): Record<string, unknown> | undefined { return this.creditCardMetadata }
   getProviderCreatedAt(): Date { return this.providerCreatedAt }
   getProviderUpdatedAt(): Date { return this.providerUpdatedAt }
 }

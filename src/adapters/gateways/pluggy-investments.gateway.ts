@@ -2,6 +2,7 @@ import { Decimal } from 'decimal.js'
 import type { PluggyClient } from 'pluggy-sdk'
 import { ApplicationError } from '../../shared/application-error.js'
 import { pluggySdkError, toDateOrUndefined } from './pluggy-client.gateway.js'
+import type { PluggyPositionMetadata } from '../../entities/pluggy-position.js'
 
 // Mesmo shape que PluggyPositionRep.save espera — a fronteira de conversão pra Decimal (fronteira-pluggy
 // regra 1) acontece aqui, uma vez, não em quem consome esta lista.
@@ -29,6 +30,27 @@ export interface PluggyInvestmentDto {
   // Pluggy, e é o que a carga de histórico usa como portão incremental da custódia — ausente força
   // varredura integral (spec pluggy-transaction-history).
   updatedAt: Date | undefined
+  // Campos capturados na change pluggy-complete-data-capture (spec pluggy-position-sync) — antes
+  // descartados aqui mesmo, antes de chegar à entity.
+  issuerCnpj: string | undefined
+  number: string | undefined
+  amountWithdrawal: Decimal | undefined
+  amountProfit: Decimal | undefined
+  dueDate: Date | undefined
+  issuer: string | undefined
+  issueDate: Date | undefined
+  purchaseDate: Date | undefined
+  rate: Decimal | undefined
+  rateType: string | undefined
+  fixedAnnualRate: Decimal | undefined
+  lastMonthRate: Decimal | undefined
+  annualRate: Decimal | undefined
+  lastTwelveMonthsRate: Decimal | undefined
+  owner: string | undefined
+  metadata: PluggyPositionMetadata | undefined
+  // Payload bruto, exatamente como recebido, capturado antes desta validação (change
+  // pluggy-complete-data-capture, spec pluggy-raw-payload-audit).
+  raw: Record<string, unknown>
 }
 
 export interface PluggyInvestmentsPageDto {
@@ -185,6 +207,28 @@ export class PluggyInvestmentsGateway {
         index,
         'institution.number',
       ),
+      issuerCnpj: optionalString(investment.issuerCNPJ, itemId, index, 'issuerCNPJ'),
+      number: optionalString(investment.number, itemId, index, 'number'),
+      amountWithdrawal: optionalDecimal(investment.amountWithdrawal, itemId, index, 'amountWithdrawal'),
+      amountProfit: optionalDecimal(investment.amountProfit, itemId, index, 'amountProfit'),
+      dueDate: optionalDate(investment.dueDate, itemId, index, 'dueDate'),
+      issuer: optionalString(investment.issuer, itemId, index, 'issuer'),
+      issueDate: optionalDate(investment.issueDate, itemId, index, 'issueDate'),
+      purchaseDate: optionalDate(investment.purchaseDate, itemId, index, 'purchaseDate'),
+      rate: optionalDecimal(investment.rate, itemId, index, 'rate'),
+      rateType: optionalString(investment.rateType, itemId, index, 'rateType'),
+      fixedAnnualRate: optionalDecimal(investment.fixedAnnualRate, itemId, index, 'fixedAnnualRate'),
+      lastMonthRate: optionalDecimal(investment.lastMonthRate, itemId, index, 'lastMonthRate'),
+      annualRate: optionalDecimal(investment.annualRate, itemId, index, 'annualRate'),
+      lastTwelveMonthsRate: optionalDecimal(
+        investment.lastTwelveMonthsRate,
+        itemId,
+        index,
+        'lastTwelveMonthsRate',
+      ),
+      owner: optionalString(investment.owner, itemId, index, 'owner'),
+      metadata: optionalMetadata(investment.metadata, itemId, index),
+      raw: investment,
     }
   }
 }
@@ -255,4 +299,25 @@ function getInstitutionField(institution: unknown, itemId: string, index: number
     throw new ApplicationError('PLUGGY_INVESTMENT_RESPONSE_INVALID', { itemId, index, field: 'institution' })
   }
   return (institution as Record<string, unknown>)[field]
+}
+
+// `InvestmentMetadata` (taxRegime/proposalNumber/processNumber) — objeto pequeno e fechado,
+// carregado inteiro; cada campo interno é string opcional, sem invariante próprio a validar aqui.
+function optionalMetadata(
+  value: unknown,
+  itemId: string,
+  index: number,
+): PluggyPositionMetadata | undefined {
+  if (value === undefined || value === null) {
+    return undefined
+  }
+  if (typeof value !== 'object' || Array.isArray(value)) {
+    throw new ApplicationError('PLUGGY_INVESTMENT_RESPONSE_INVALID', { itemId, index, field: 'metadata' })
+  }
+  const raw = value as Record<string, unknown>
+  return {
+    taxRegime: optionalString(raw.taxRegime, itemId, index, 'metadata.taxRegime'),
+    proposalNumber: optionalString(raw.proposalNumber, itemId, index, 'metadata.proposalNumber'),
+    processNumber: optionalString(raw.processNumber, itemId, index, 'metadata.processNumber'),
+  }
 }

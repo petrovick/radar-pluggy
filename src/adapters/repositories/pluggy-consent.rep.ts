@@ -11,6 +11,8 @@ export interface SavePluggyConsentInput {
   grantedAt: Date
   expiresAt: Date | undefined
   revokedAt: Date | undefined
+  products: string[] | undefined
+  openFinancePermissionsGranted: string[] | undefined
 }
 
 export class PluggyConsentRep {
@@ -43,6 +45,8 @@ export class PluggyConsentRep {
           granted_at: draft.getGrantedAt(),
           expires_at: draft.getExpiresAt() ?? null,
           revoked_at: draft.getRevokedAt() ?? null,
+          products: draft.getProducts() ?? null,
+          open_finance_permissions_granted: draft.getOpenFinancePermissionsGranted() ?? null,
           created_at: now,
           updated_at: now,
         } as PluggyConsentRow,
@@ -59,6 +63,8 @@ export class PluggyConsentRep {
           granted_at: draft.getGrantedAt(),
           expires_at: draft.getExpiresAt() ?? null,
           revoked_at: draft.getRevokedAt() ?? null,
+          products: draft.getProducts() ?? null,
+          open_finance_permissions_granted: draft.getOpenFinancePermissionsGranted() ?? null,
           updated_at: now,
         },
         transaction ? { transaction } : {},

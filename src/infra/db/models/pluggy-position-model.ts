@@ -24,6 +24,22 @@ export interface PluggyPositionRow {
   institution_name: string | null
   institution_number: string | null
   quota_date: Date
+  issuer_cnpj: string | null
+  number: string | null
+  amount_withdrawal: string | null
+  amount_profit: string | null
+  due_date: Date | null
+  issuer: string | null
+  issue_date: Date | null
+  purchase_date: Date | null
+  rate: string | null
+  rate_type: string | null
+  fixed_annual_rate: string | null
+  last_month_rate: string | null
+  annual_rate: string | null
+  last_twelve_months_rate: string | null
+  owner: string | null
+  metadata: Record<string, unknown> | null
   created_at: Date
   updated_at: Date
 }
@@ -52,6 +68,22 @@ export function definePluggyPositionModel(sequelize: Sequelize) {
       institution_name: { type: DataTypes.STRING(255), allowNull: true },
       institution_number: { type: DataTypes.STRING(30), allowNull: true },
       quota_date: { type: DataTypes.DATE(3), allowNull: false },
+      issuer_cnpj: { type: DataTypes.STRING(20), allowNull: true },
+      number: { type: DataTypes.STRING(60), allowNull: true },
+      amount_withdrawal: { type: DataTypes.DECIMAL(20, 2), allowNull: true },
+      amount_profit: { type: DataTypes.DECIMAL(20, 2), allowNull: true },
+      due_date: { type: DataTypes.DATE(3), allowNull: true },
+      issuer: { type: DataTypes.STRING(255), allowNull: true },
+      issue_date: { type: DataTypes.DATE(3), allowNull: true },
+      purchase_date: { type: DataTypes.DATE(3), allowNull: true },
+      rate: { type: DataTypes.DECIMAL(20, 8), allowNull: true },
+      rate_type: { type: DataTypes.STRING(40), allowNull: true },
+      fixed_annual_rate: { type: DataTypes.DECIMAL(20, 8), allowNull: true },
+      last_month_rate: { type: DataTypes.DECIMAL(20, 8), allowNull: true },
+      annual_rate: { type: DataTypes.DECIMAL(20, 8), allowNull: true },
+      last_twelve_months_rate: { type: DataTypes.DECIMAL(20, 8), allowNull: true },
+      owner: { type: DataTypes.STRING(255), allowNull: true },
+      metadata: { type: DataTypes.JSON, allowNull: true },
       created_at: { type: DataTypes.DATE(3), allowNull: false },
       updated_at: { type: DataTypes.DATE(3), allowNull: false },
     },

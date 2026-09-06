@@ -26,6 +26,12 @@ export interface PluggyAccountTransactionDto {
   paymentData: Record<string, unknown> | undefined
   providerCreatedAt: Date
   providerUpdatedAt: Date
+  // `CreditCardMetadata` inteiro (change pluggy-complete-data-capture, spec
+  // pluggy-transaction-history) — antes nunca lido aqui.
+  creditCardMetadata: Record<string, unknown> | undefined
+  // Payload bruto, exatamente como recebido, capturado antes desta validação (change
+  // pluggy-complete-data-capture, spec pluggy-raw-payload-audit).
+  raw: Record<string, unknown>
 }
 
 export interface PluggyAccountTransactionsPageDto {
@@ -181,6 +187,8 @@ export class PluggyAccountTransactionsGateway {
       sourceOrder: optionalInteger(tx.order, accountId, index, 'order'),
       merchant: optionalObject(tx.merchant, accountId, index, 'merchant'),
       paymentData: optionalObject(tx.paymentData, accountId, index, 'paymentData'),
+      creditCardMetadata: optionalObject(tx.creditCardMetadata, accountId, index, 'creditCardMetadata'),
+      raw: tx,
     }
   }
 }

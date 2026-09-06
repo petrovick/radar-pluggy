@@ -26,6 +26,9 @@ export interface PluggyItemSnapshot {
   lastUpdatedAt: string | undefined
   // Ausente quando a Pluggy manda `statusDetail: null` — item sem ressalva alguma.
   products: Partial<Record<PluggyProductKey, PluggyProductStatus>>
+  // Payload bruto, exatamente como recebido, capturado antes desta validação (change
+  // pluggy-complete-data-capture, spec pluggy-raw-payload-audit).
+  raw: Record<string, unknown>
 }
 
 type PluggyItemResponse = {
@@ -89,6 +92,7 @@ export class PluggyItemsGateway {
       executionStatus: data.executionStatus,
       lastUpdatedAt,
       products: this.parseProducts(itemId, data.statusDetail),
+      raw: data as Record<string, unknown>,
     }
   }
 
