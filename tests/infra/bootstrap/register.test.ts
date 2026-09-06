@@ -45,6 +45,19 @@ describe('container do processo', () => {
     expect(scope.resolve('personRep')).toBeInstanceOf(PersonRep)
   })
 
+  // Resolver o logger não basta: `asFunction(createLogger)` sob `InjectionMode.PROXY` passa o
+  // cradle inteiro como `writer` só porque o parâmetro se chama `writer` — o container resolve
+  // sem erro, e só quebra ("writer is not a function") na primeira chamada de log de verdade
+  // (achado em produção: o primeiro `logger.info` do boot derrubava o processo).
+  it('o logger resolvido do container loga de verdade, sem estourar "writer is not a function"', () => {
+    const scope = createScope(container, 'test-request-id')
+    const logger = scope.resolve('logger')
+
+    expect(() => logger.info('log de teste')).not.toThrow()
+    expect(() => logger.warn('log de teste')).not.toThrow()
+    expect(() => logger.error('log de teste')).not.toThrow()
+  })
+
   it('cada escopo tem seu próprio detentor de transação', () => {
     const scopeA = createScope(container, 'request-a')
     const scopeB = createScope(container, 'request-b')
