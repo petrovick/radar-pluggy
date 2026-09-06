@@ -9,7 +9,7 @@ O formato `railway.json`/`.toml` (Config as Code) está deprecated, com corte to
 ## Goals / Non-Goals
 
 **Goals:**
-- `radar-pluggy` rodando de verdade num ambiente Railway `staging`, imagem vinda do GHCR, redeployado a cada push em `main` sem clique manual no dashboard.
+- `radar-pluggy` rodando de verdade num ambiente Railway `staging`, imagem vinda do GHCR, redeployado a cada push na branch `staging` (default do repositório) sem clique manual no dashboard.
 - Nascer direto em `.railway/railway.ts` (não em `railway.json`), já que o serviço começa do zero e o formato antigo desliga em três meses.
 - Migration (`preDeploy`) continua funcionando como funcionaria sob `railway.json` — mesma imagem de runtime, mesmo comando, só o `--env` muda.
 
@@ -59,7 +59,7 @@ O formato `railway.json`/`.toml` (Config as Code) está deprecated, com corte to
 3. Escrever `.railway/railway.ts`; rodar `railway config plan`/`apply` manualmente uma vez (linkado ao ambiente `staging`) pra criar o serviço e confirmar a forma.
 4. Cadastrar `RAILWAY_TOKEN` (project token escopado a `staging`) como secret do repositório.
 5. Adicionar `.github/workflows/deploy-staging.yml` (build, push, redeploy) e `.github/workflows/railway-config.yml` (plan/apply futuro).
-6. Primeiro push em `main`: confirmar publish da imagem, marcar pacote GHCR como público, confirmar que o redeploy do Railway puxa a imagem nova e o serviço sobe (healthcheck verde, migration aplicada).
+6. Primeiro push na branch `staging` (default do repositório — `main` não é usada por este pipeline): confirmar publish da imagem, marcar pacote GHCR como público, confirmar que o redeploy do Railway puxa a imagem nova e o serviço sobe (healthcheck verde, migration aplicada).
 7. Remover `railway.json`.
 
 Rollback: reverter o commit de merge (remove os workflows novos e `.railway/railway.ts`, restaura `railway.json`); o serviço `staging` no Railway, se já criado, é removido manualmente via dashboard/MCP — nada neste desenho apaga recurso do Railway automaticamente a partir de um rollback de código.

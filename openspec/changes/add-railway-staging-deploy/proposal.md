@@ -4,7 +4,7 @@ O `radar-pluggy` tem `Dockerfile` e `railway.json` publicados, mas nunca foi de 
 
 ## What Changes
 
-- Novo workflow do GitHub Actions: builda a imagem (`Dockerfile` existente, estágio `runtime`) a cada push em `main` e publica em `ghcr.io/petrovick/radar-pluggy` com tag mutável `:staging` mais uma tag imutável por commit (`:sha-<hash>`, pra rastreabilidade). Pacote público — Railway consome sem credencial de registry.
+- Novo workflow do GitHub Actions: builda a imagem (`Dockerfile` existente, estágio `runtime`) a cada push na branch `staging` (default do repositório) e publica em `ghcr.io/petrovick/radar-pluggy` com tag mutável `:staging` mais uma tag imutável por commit (`:sha-<hash>`, pra rastreabilidade). Pacote público — Railway consome sem credencial de registry.
 - Após o build+push, o mesmo workflow chama `railway redeploy --service radar-pluggy` (Railway CLI) usando um project token escopado ao ambiente `staging` (`RAILWAY_TOKEN` nos secrets do repositório), forçando o Railway a puxar a tag `:staging` de novo e pegar o digest novo.
 - Novo ambiente `staging` no projeto Railway `oplab-radar` (existente, hoje só com `oplab-radar-api`/`oplab-radar-front` em `production`). Serviço `radar-pluggy` criado de forma declarativa em `.railway/railway.ts`: fonte = imagem GHCR (`:staging`), `healthcheck: /healthcheck`, `preDeploy` rodando a migration (`sequelize db:migrate --env staging`), variáveis `NODE_ENV`, `CONFIG`, `DATABASES`, `PLUGGY_CREDENTIAL_ENCRYPTION_KEY`.
 - `sequelize.config.cjs` ganha um bloco `staging` (mesmo formato do `production`: lê `DATABASES` como JSON) — hoje só existem `development`/`production`, e `db:migrate --env staging` quebraria por chave inexistente.
