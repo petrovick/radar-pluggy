@@ -28,8 +28,8 @@ export function createHttpServer(deps: HttpServerDependencies): Express {
   // os casos de uso daquela unidade de trabalho — inclusive os que o middleware de autenticação usa.
   app.use(createRequestScopeMiddleware(deps.container))
 
-  // Sem JWT: é a plataforma (Railway) quem chama, não um titular — `railway.json` →
-  // `healthcheckPath`.
+  // Sem JWT: é a plataforma (Railway) quem chama, não um titular — `.railway/railway.ts` →
+  // `healthcheck`.
   app.get('/healthcheck', checkHealthHandler)
 
   app.post('/credentials', authenticate, registerPluggyCredentialHandler)

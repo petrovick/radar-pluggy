@@ -1,0 +1,49 @@
+name: Deploy staging
+
+on:
+  push:
+    branches: [main]
+
+concurrency:
+  group: deploy-staging
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    # `RAILWAY_TOKEN` é secret do GitHub Environment `staging` (não de repositório) — sem declarar
+    # o Environment aqui, o job não enxerga o secret e `secrets.RAILWAY_TOKEN` chega vazio.
+    environment: staging
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Short SHA
+        id: sha
+        run: echo "short=${GITHUB_SHA::7}" >> "$GITHUB_OUTPUT"
+
+      - name: Log in to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build and push
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          platforms: linux/amd64
+          push: true
+          tags: |
+            ghcr.io/${{ github.repository }}:staging
+            ghcr.io/${{ github.repository }}:sha-${{ steps.sha.outputs.short }}
+
+      # Tag mutável, então o Railway precisa ser instruído a puxar de novo — não há gatilho
+      # automático de "nova imagem publicada" (Option 1 da doc do Railway pra registry externo).
+      - name: Redeploy on Railway
+        run: npx -y @railway/cli@latest redeploy --service radar-pluggy --yes
+        env:
+          RAILWAY_TOKEN: ${{ secrets.RAILWAY_TOKEN }}

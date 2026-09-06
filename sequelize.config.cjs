@@ -19,6 +19,15 @@ function assertNoMigrationPlaceholder(cfg) {
   }
 }
 
+// Guarda compartilhada por `staging`/`production` (dois call sites reais, mesmo comportamento):
+// nomeia o ambiente que pediu a migration na mensagem de erro, sem duplicar a checagem.
+function requireDatabasesConfig(envName) {
+  if (!process.env.DATABASES) {
+    throw new Error(`DATABASES env var is required to run migrations in ${envName}`)
+  }
+  return fromDatabasesJson(process.env.DATABASES)
+}
+
 function fromDatabasesJson(raw) {
   const { main } = JSON.parse(raw)
   const { ssl, ...dialectOptionsRest } = main.dialectOptions ?? {}
@@ -56,12 +65,14 @@ function developmentConfig() {
 
 module.exports = {
   development: developmentConfig(),
-  // Getter, não valor: só recusa quando o `sequelize-cli` de fato pede `--env production`, sem
-  // exigir `DATABASES` pra rodar `development` (os dois nunca concorrem pela mesma env var).
+  // Getter, não valor: só recusa quando o `sequelize-cli` de fato pede `--env staging`/`--env
+  // production`, sem exigir `DATABASES` pra rodar `development` (nunca concorrem pela mesma env
+  // var). `staging` é idêntico a `production` — mesmo formato de `DATABASES`, ambiente Railway
+  // diferente é o que distingue os dois, não o código.
+  get staging() {
+    return requireDatabasesConfig('staging')
+  },
   get production() {
-    if (!process.env.DATABASES) {
-      throw new Error('DATABASES env var is required to run migrations in production')
-    }
-    return fromDatabasesJson(process.env.DATABASES)
+    return requireDatabasesConfig('production')
   },
 }
