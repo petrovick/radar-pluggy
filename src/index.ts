@@ -4,7 +4,7 @@ import { drainPluggyWebhookEvents } from './infra/worker/webhook-drainer.js'
 import { loadConfig } from './infra/config/config.js'
 
 // Composition root do processo — primeiro entrypoint real deste serviço. Migration roda como
-// Pre-Deploy Command do Railway (`railway.json`), container separado, antes deste processo subir;
+// `preDeploy` do Railway (`.railway/railway.ts`), container separado, antes deste processo subir;
 // este arquivo nunca chama sync(). `loadConfig()` recusa alto, nomeando toda variável obrigatória
 // ausente ou malformada, antes de qualquer container ou conexão existir.
 const config = loadConfig()

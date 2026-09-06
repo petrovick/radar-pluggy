@@ -44,9 +44,9 @@ jobs:
       - run: npx sequelize-cli db:migrate --env development
       - run: npm test
 
-  # Constrói a imagem que o Railway publica. Sem este job, erro de Dockerfile só apareceria no
-  # deploy. Não empurra a imagem para registry nenhum: o Railway builda do source, então aqui o
-  # build é a própria verificação.
+  # Smoke test do Dockerfile em todo push/PR — sem este job, erro de build só apareceria no
+  # `deploy-staging.yml` (que builda pra valer e publica no GHCR). Não empurra a imagem pra
+  # registry nenhum, propósito diferente do job de deploy: aqui o build é a própria verificação.
   docker:
     runs-on: ubuntu-latest
     steps:

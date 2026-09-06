@@ -5,15 +5,17 @@ import { validConfigEnv } from './support/test-config-env.js'
 
 const require = createRequire(import.meta.url)
 
-function productionConfigFromCjs(): Record<string, unknown> {
+function configFromCjs(env: 'staging' | 'production'): Record<string, unknown> {
   const modulePath = require.resolve('../sequelize.config.cjs')
   delete require.cache[modulePath]
-  return require(modulePath).production as Record<string, unknown>
+  return require(modulePath)[env] as Record<string, unknown>
 }
 
 // Prova que a leitura de `DATABASES` em `sequelize.config.cjs` (consumida pelo `sequelize-cli`,
 // que não importa módulo TS) concorda com `infra/config/config.ts` (consumida pelo processo) para
-// a mesma variável — as duas leem o mesmo formato, cada uma na sua linguagem.
+// a mesma variável — as duas leem o mesmo formato, cada uma na sua linguagem. `staging` e
+// `production` são o mesmo getter (mesmo `DATABASES`), então toda asserção de paridade vale pros
+// dois ambientes Railway.
 describe('sequelize.config.cjs', () => {
   const originalDatabases = process.env.DATABASES
 
@@ -30,9 +32,7 @@ describe('sequelize.config.cjs', () => {
     process.env.DATABASES = raw
 
     const fromConfig = loadConfig({ ...validConfigEnv(), DATABASES: raw }).database
-    const fromCjs = productionConfigFromCjs()
-
-    expect(fromCjs).toEqual({
+    const expected = {
       dialect: 'mysql',
       host: fromConfig.host,
       port: fromConfig.port,
@@ -40,7 +40,10 @@ describe('sequelize.config.cjs', () => {
       username: fromConfig.username,
       password: fromConfig.password,
       dialectOptions: fromConfig.dialectOptions,
-    })
+    }
+
+    expect(configFromCjs('production')).toEqual(expected)
+    expect(configFromCjs('staging')).toEqual(expected)
   }
 
   it('concorda quando dialectOptions.ssl: false recua a TLS', () => {
@@ -91,13 +94,14 @@ describe('sequelize.config.cjs', () => {
     })
   })
 
-  it('DATABASES ausente recusa ao ler production, nunca ao ler development', () => {
+  it('DATABASES ausente recusa ao ler staging ou production, nunca ao ler development', () => {
     delete process.env.DATABASES
     const modulePath = require.resolve('../sequelize.config.cjs')
     delete require.cache[modulePath]
     const cjs = require(modulePath) as Record<string, unknown>
 
-    expect(() => cjs.production).toThrow('DATABASES env var is required')
+    expect(() => cjs.staging).toThrow('DATABASES env var is required to run migrations in staging')
+    expect(() => cjs.production).toThrow('DATABASES env var is required to run migrations in production')
     expect(cjs.development).toBeDefined()
   })
 })

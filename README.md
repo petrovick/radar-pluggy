@@ -11,7 +11,7 @@ inbox durável, dreno e reconciliação manual), sincronização de posição e 
 Pluggy, e `GET /healthcheck`. Estrutura de pastas e regra de dependência em `arquitetura-camadas`;
 regra fiscal e de domínio Pluggy em `fronteira-pluggy`.
 
-Artefato de deploy (Docker, `railway.json`, migração via `DATABASES`), configuração que recusa
+Artefato de deploy (Docker, GHCR, `.railway/railway.ts`, migração via `DATABASES`), configuração que recusa
 ausência em vez de default (`config.json`/`databases.json` ou `CONFIG`/`DATABASES`) e ferramental
 de dev local (`Makefile`, `docker-compose`) já publicados.
 
