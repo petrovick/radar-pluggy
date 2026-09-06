@@ -9,6 +9,8 @@ export interface PluggyConsentRow {
   granted_at: Date
   expires_at: Date | null
   revoked_at: Date | null
+  products: string[] | null
+  open_finance_permissions_granted: string[] | null
   created_at: Date
   updated_at: Date
 }
@@ -23,6 +25,8 @@ export function definePluggyConsentModel(sequelize: Sequelize) {
       granted_at: { type: DataTypes.DATE(3), allowNull: false },
       expires_at: { type: DataTypes.DATE(3), allowNull: true },
       revoked_at: { type: DataTypes.DATE(3), allowNull: true },
+      products: { type: DataTypes.JSON, allowNull: true },
+      open_finance_permissions_granted: { type: DataTypes.JSON, allowNull: true },
       created_at: { type: DataTypes.DATE(3), allowNull: false },
       updated_at: { type: DataTypes.DATE(3), allowNull: false },
     },

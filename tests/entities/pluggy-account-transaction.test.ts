@@ -69,6 +69,24 @@ describe('PluggyAccountTransaction', () => {
     expect(tx.getSourceOrder()).toBe(1)
   })
 
+  // Change pluggy-complete-data-capture, spec pluggy-transaction-history: campo antes descartado.
+  it('aceita criação com creditCardMetadata presente', () => {
+    const tx = PluggyAccountTransaction.create({
+      ...validTransactionProps(),
+      creditCardMetadata: { installmentNumber: 1, totalInstallments: 3, billForecastDate: '2026-10' },
+    })
+    expect(tx.getCreditCardMetadata()).toEqual({
+      installmentNumber: 1,
+      totalInstallments: 3,
+      billForecastDate: '2026-10',
+    })
+  })
+
+  it('transação sem creditCardMetadata mantém o campo indefinido', () => {
+    const tx = PluggyAccountTransaction.create(validTransactionProps())
+    expect(tx.getCreditCardMetadata()).toBeUndefined()
+  })
+
   it.each([
     ['itemId', 'PLUGGY_ACCOUNT_TRANSACTION_ITEM_ID_MISSING'],
     ['accountId', 'PLUGGY_ACCOUNT_TRANSACTION_ACCOUNT_ID_MISSING'],

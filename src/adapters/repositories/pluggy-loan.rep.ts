@@ -23,6 +23,21 @@ export interface SavePluggyLoanInput {
   dueInstallments: number | undefined
   pastDueInstallments: number | undefined
   outstandingBalance: Decimal | undefined
+  ipocCode: string | undefined
+  disbursementDates: Date[] | undefined
+  firstInstallmentDueDate: Date | undefined
+  cet: Decimal | undefined
+  installmentPeriodicity: string | undefined
+  installmentPeriodicityAdditionalInfo: string | undefined
+  amortizationScheduled: string | undefined
+  amortizationScheduledAdditionalInfo: string | undefined
+  cnpjConsignee: string | undefined
+  interestRates: Record<string, unknown>[] | undefined
+  contractedFees: Record<string, unknown>[] | undefined
+  contractedFinanceCharges: Record<string, unknown>[] | undefined
+  warranties: Record<string, unknown>[] | undefined
+  installments: Record<string, unknown> | undefined
+  payments: Record<string, unknown> | undefined
 }
 
 // Mesmo formato de PluggyPositionRep: bag do container, model resolvido dela, transação vigente lida
@@ -60,6 +75,21 @@ export class PluggyLoanRep {
         dueInstallments: input.dueInstallments,
         pastDueInstallments: input.pastDueInstallments,
         outstandingBalance: input.outstandingBalance,
+        ipocCode: input.ipocCode,
+        disbursementDates: input.disbursementDates,
+        firstInstallmentDueDate: input.firstInstallmentDueDate,
+        cet: input.cet,
+        installmentPeriodicity: input.installmentPeriodicity,
+        installmentPeriodicityAdditionalInfo: input.installmentPeriodicityAdditionalInfo,
+        amortizationScheduled: input.amortizationScheduled,
+        amortizationScheduledAdditionalInfo: input.amortizationScheduledAdditionalInfo,
+        cnpjConsignee: input.cnpjConsignee,
+        interestRates: input.interestRates,
+        contractedFees: input.contractedFees,
+        contractedFinanceCharges: input.contractedFinanceCharges,
+        warranties: input.warranties,
+        installments: input.installments,
+        payments: input.payments,
       }),
     })
     const now = new Date()
@@ -99,6 +129,21 @@ function toRow(loan: PluggyLoan, now: Date): PluggyLoanRow {
     due_installments: loan.getDueInstallments() ?? null,
     past_due_installments: loan.getPastDueInstallments() ?? null,
     outstanding_balance: loan.getOutstandingBalance()?.toFixed(2) ?? null,
+    ipoc_code: loan.getIpocCode() ?? null,
+    disbursement_dates: loan.getDisbursementDates()?.map((d) => d.toISOString()) ?? null,
+    first_installment_due_date: loan.getFirstInstallmentDueDate() ?? null,
+    cet: loan.getCet()?.toFixed(8) ?? null,
+    installment_periodicity: loan.getInstallmentPeriodicity() ?? null,
+    installment_periodicity_additional_info: loan.getInstallmentPeriodicityAdditionalInfo() ?? null,
+    amortization_scheduled: loan.getAmortizationScheduled() ?? null,
+    amortization_scheduled_additional_info: loan.getAmortizationScheduledAdditionalInfo() ?? null,
+    cnpj_consignee: loan.getCnpjConsignee() ?? null,
+    interest_rates: loan.getInterestRates() ?? null,
+    contracted_fees: loan.getContractedFees() ?? null,
+    contracted_finance_charges: loan.getContractedFinanceCharges() ?? null,
+    warranties: loan.getWarranties() ?? null,
+    installments: loan.getInstallments() ?? null,
+    payments: loan.getPayments() ?? null,
     created_at: now,
     updated_at: now,
   } as PluggyLoanRow
@@ -124,6 +169,21 @@ export function toEntity(row: PluggyLoanRow): PluggyLoan {
       dueInstallments: row.due_installments ?? undefined,
       pastDueInstallments: row.past_due_installments ?? undefined,
       outstandingBalance: row.outstanding_balance !== null ? new Decimal(row.outstanding_balance) : undefined,
+      ipocCode: row.ipoc_code ?? undefined,
+      disbursementDates: row.disbursement_dates?.map((d) => new Date(d)) ?? undefined,
+      firstInstallmentDueDate: row.first_installment_due_date ?? undefined,
+      cet: row.cet !== null ? new Decimal(row.cet) : undefined,
+      installmentPeriodicity: row.installment_periodicity ?? undefined,
+      installmentPeriodicityAdditionalInfo: row.installment_periodicity_additional_info ?? undefined,
+      amortizationScheduled: row.amortization_scheduled ?? undefined,
+      amortizationScheduledAdditionalInfo: row.amortization_scheduled_additional_info ?? undefined,
+      cnpjConsignee: row.cnpj_consignee ?? undefined,
+      interestRates: row.interest_rates ?? undefined,
+      contractedFees: row.contracted_fees ?? undefined,
+      contractedFinanceCharges: row.contracted_finance_charges ?? undefined,
+      warranties: row.warranties ?? undefined,
+      installments: row.installments ?? undefined,
+      payments: row.payments ?? undefined,
     }),
   })
 }

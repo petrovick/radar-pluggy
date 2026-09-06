@@ -26,6 +26,9 @@ export interface PluggyAccountRow {
   is_limit_flexible: boolean | null
   status: string | null
   holder_type: string | null
+  tax_number: string | null
+  bank_data: Record<string, unknown> | null
+  disaggregated_credit_limits: Record<string, unknown>[] | null
   created_at: Date
   updated_at: Date
 }
@@ -59,6 +62,9 @@ export function definePluggyAccountModel(sequelize: Sequelize) {
       is_limit_flexible: { type: DataTypes.BOOLEAN, allowNull: true },
       status: { type: DataTypes.STRING(20), allowNull: true },
       holder_type: { type: DataTypes.STRING(20), allowNull: true },
+      tax_number: { type: DataTypes.STRING(20), allowNull: true },
+      bank_data: { type: DataTypes.JSON, allowNull: true },
+      disaggregated_credit_limits: { type: DataTypes.JSON, allowNull: true },
       created_at: { type: DataTypes.DATE(3), allowNull: false },
       updated_at: { type: DataTypes.DATE(3), allowNull: false },
     },

@@ -29,6 +29,16 @@ describe('PluggyAccountTransactionRep', () => {
       }
       await migration.up(queryInterface, Sequelize)
     }
+    const cols = await queryInterface.describeTable('pluggy_connector_account_transactions')
+    if (!cols.credit_card_metadata) {
+      const { createRequire } = await import('node:module')
+      const require = createRequire(import.meta.url)
+      const { Sequelize } = await import('sequelize')
+      const fullCaptureMigration = require('../../../src/infra/db/migrations/20260906180200-adicionar-credit-card-metadata-em-pluggy-connector-account-transactions.cjs') as {
+        up: (queryInterface: unknown, sequelizeLib: typeof Sequelize) => Promise<void>
+      }
+      await fullCaptureMigration.up(queryInterface, Sequelize)
+    }
   })
 
   afterEach(async () => {
@@ -108,5 +118,37 @@ describe('PluggyAccountTransactionRep', () => {
     await expect(
       repository.save({ ...baseInput('item-x', 'acc-x', ''), transactionId: '' }),
     ).rejects.toBeInstanceOf(ApplicationError)
+  })
+
+  // Change pluggy-complete-data-capture, spec pluggy-transaction-history: campo antes descartado.
+  it('salva e recupera creditCardMetadata inteiro', async () => {
+    const itemId = randomUUID()
+    const accountId = randomUUID()
+    const txId = randomUUID()
+    itemIdsToCleanup.push(itemId)
+
+    await repository.save({
+      ...baseInput(itemId, accountId, txId),
+      creditCardMetadata: { installmentNumber: 1, totalInstallments: 3, billForecastDate: '2026-10' },
+    })
+
+    const list = await repository.findByAccountId(accountId)
+    expect(list[0]?.getCreditCardMetadata()).toEqual({
+      installmentNumber: 1,
+      totalInstallments: 3,
+      billForecastDate: '2026-10',
+    })
+  })
+
+  it('transação sem creditCardMetadata grava e recupera com o campo indefinido', async () => {
+    const itemId = randomUUID()
+    const accountId = randomUUID()
+    const txId = randomUUID()
+    itemIdsToCleanup.push(itemId)
+
+    await repository.save(baseInput(itemId, accountId, txId))
+
+    const list = await repository.findByAccountId(accountId)
+    expect(list[0]?.getCreditCardMetadata()).toBeUndefined()
   })
 })

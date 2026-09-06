@@ -1,6 +1,7 @@
 import type { Decimal } from 'decimal.js'
 import type { ApplicationError } from '../../../shared/application-error.js'
 import type { DefaultGateway } from '../../default/default-gateway.js'
+import type { PluggyPositionMetadata } from '../../../entities/pluggy-position.js'
 
 // Contrato deste caso de uso (arquitetura-camadas, regra 2): entrada, saída e **uma** interface de
 // gateway, satisfeita por `adapters/gateways/pluggy-position/sync-pluggy-position.impl.ts`. Este
@@ -15,6 +16,9 @@ export interface CurrentItemState {
   status: string
   executionStatus: string
   lastUpdatedAt: string | undefined
+  // Payload bruto do item, capturado junto do registro principal (change
+  // pluggy-complete-data-capture, spec pluggy-raw-payload-audit).
+  raw: Record<string, unknown>
 }
 
 export interface PluggyInvestmentInput {
@@ -39,6 +43,25 @@ export interface PluggyInvestmentInput {
   institutionName: string | undefined
   institutionNumber: string | undefined
   quotaDate: Date
+  // Campos capturados na change pluggy-complete-data-capture (spec pluggy-position-sync) — antes
+  // descartados no gateway antes de chegar aqui.
+  issuerCnpj: string | undefined
+  number: string | undefined
+  amountWithdrawal: Decimal | undefined
+  amountProfit: Decimal | undefined
+  dueDate: Date | undefined
+  issuer: string | undefined
+  issueDate: Date | undefined
+  purchaseDate: Date | undefined
+  rate: Decimal | undefined
+  rateType: string | undefined
+  fixedAnnualRate: Decimal | undefined
+  lastMonthRate: Decimal | undefined
+  annualRate: Decimal | undefined
+  lastTwelveMonthsRate: Decimal | undefined
+  owner: string | undefined
+  metadata: PluggyPositionMetadata | undefined
+  raw: Record<string, unknown>
 }
 
 export interface PluggyInvestmentsPage {
@@ -49,8 +72,8 @@ export interface PluggyInvestmentsPage {
 }
 
 // Lado passivo do patrimônio (empréstimo/financiamento) do mesmo item, mesmo portão de marca d'água
-// dos investimentos (design.md, sincronização de loans). Subconjunto deliberado do schema `Loan` —
-// o corte completo está documentado em `adapters/gateways/pluggy-loans.gateway.ts`.
+// dos investimentos (design.md, sincronização de loans). Captura integral do schema `Loan` (change
+// pluggy-complete-data-capture, spec pluggy-loan).
 export interface PluggyLoanInput {
   loanId: string
   itemId: string
@@ -69,6 +92,22 @@ export interface PluggyLoanInput {
   dueInstallments: number | undefined
   pastDueInstallments: number | undefined
   outstandingBalance: Decimal | undefined
+  ipocCode: string | undefined
+  disbursementDates: Date[] | undefined
+  firstInstallmentDueDate: Date | undefined
+  cet: Decimal | undefined
+  installmentPeriodicity: string | undefined
+  installmentPeriodicityAdditionalInfo: string | undefined
+  amortizationScheduled: string | undefined
+  amortizationScheduledAdditionalInfo: string | undefined
+  cnpjConsignee: string | undefined
+  interestRates: Record<string, unknown>[] | undefined
+  contractedFees: Record<string, unknown>[] | undefined
+  contractedFinanceCharges: Record<string, unknown>[] | undefined
+  warranties: Record<string, unknown>[] | undefined
+  installments: Record<string, unknown> | undefined
+  payments: Record<string, unknown> | undefined
+  raw: Record<string, unknown>
 }
 
 export interface PluggyLoansPage {
@@ -93,6 +132,10 @@ export type PluggyConsentStatus =
       grantedAt: Date
       expiresAt: Date | undefined
       revokedAt: Date | undefined
+      // Escopo autorizado (change pluggy-complete-data-capture, spec pluggy-consent).
+      products: string[] | undefined
+      openFinancePermissionsGranted: string[] | undefined
+      raw: Record<string, unknown>
     }
 
 export interface SaveSyncedItemStateInput {
@@ -100,6 +143,7 @@ export interface SaveSyncedItemStateInput {
   status: string
   executionStatus: string | undefined
   lastUpdatedAt: Date | undefined
+  raw: Record<string, unknown>
 }
 
 export interface SyncPluggyPositionGateway extends DefaultGateway {

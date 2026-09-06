@@ -6,6 +6,11 @@ interface CreatePluggyConsentProps {
   grantedAt: Date
   expiresAt: Date | undefined
   revokedAt: Date | undefined
+  // Escopo autorizado (change pluggy-complete-data-capture, spec pluggy-consent) — o que o titular
+  // autorizou, não só até quando. Listas de string simples, carregadas exatamente como a Pluggy
+  // devolveu.
+  products: string[] | undefined
+  openFinancePermissionsGranted: string[] | undefined
 }
 
 export type PluggyConsentState = 'ACTIVE' | 'EXPIRED' | 'REVOKED'
@@ -16,14 +21,28 @@ export type PluggyConsentState = 'ACTIVE' | 'EXPIRED' | 'REVOKED'
 //
 // `statusAt` é o invariante: revogação manda sobre expiração — uma vez revogado, a data de expiração
 // original deixa de importar.
+// Construtor recebe `props` por nome, não por posição: `products` e
+// `openFinancePermissionsGranted` são dois campos `string[] | undefined` consecutivos — uma
+// transposição entre os dois trocaria produto por permissão em silêncio (mesmo raciocínio de
+// `pluggy-account.ts`).
 export class PluggyConsent {
-  private constructor(
-    private readonly consentId: string,
-    private readonly itemId: string,
-    private readonly grantedAt: Date,
-    private readonly expiresAt: Date | undefined,
-    private readonly revokedAt: Date | undefined,
-  ) {}
+  private readonly consentId: string
+  private readonly itemId: string
+  private readonly grantedAt: Date
+  private readonly expiresAt: Date | undefined
+  private readonly revokedAt: Date | undefined
+  private readonly products: string[] | undefined
+  private readonly openFinancePermissionsGranted: string[] | undefined
+
+  private constructor(props: CreatePluggyConsentProps) {
+    this.consentId = props.consentId
+    this.itemId = props.itemId
+    this.grantedAt = props.grantedAt
+    this.expiresAt = props.expiresAt
+    this.revokedAt = props.revokedAt
+    this.products = props.products
+    this.openFinancePermissionsGranted = props.openFinancePermissionsGranted
+  }
 
   static create(props: CreatePluggyConsentProps): PluggyConsent {
     assertNonEmpty(props.consentId, 'PLUGGY_CONSENT_ID_MISSING')
@@ -31,7 +50,7 @@ export class PluggyConsent {
     if (props.grantedAt === undefined || Number.isNaN(props.grantedAt.getTime())) {
       throw new ApplicationError('PLUGGY_CONSENT_GRANTED_AT_MISSING', { consentId: props.consentId })
     }
-    return new PluggyConsent(props.consentId, props.itemId, props.grantedAt, props.expiresAt, props.revokedAt)
+    return new PluggyConsent(props)
   }
 
   // Reconstrói a partir de uma linha já persistida — mesma validação de `create`, nenhum side effect
@@ -68,6 +87,14 @@ export class PluggyConsent {
 
   getRevokedAt(): Date | undefined {
     return this.revokedAt
+  }
+
+  getProducts(): string[] | undefined {
+    return this.products
+  }
+
+  getOpenFinancePermissionsGranted(): string[] | undefined {
+    return this.openFinancePermissionsGranted
   }
 }
 

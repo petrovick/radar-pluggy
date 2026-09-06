@@ -35,6 +35,13 @@ import { PluggyPositionSnapshotRep } from '../../adapters/repositories/pluggy-po
 import { PluggyLoanRep } from '../../adapters/repositories/pluggy-loan.rep.js'
 import { PluggyLoanSnapshotRep } from '../../adapters/repositories/pluggy-loan-snapshot.rep.js'
 import { PluggyConsentRep } from '../../adapters/repositories/pluggy-consent.rep.js'
+import { PluggyItemRawRep } from '../../adapters/repositories/pluggy-item-raw.rep.js'
+import { PluggyConsentRawRep } from '../../adapters/repositories/pluggy-consent-raw.rep.js'
+import { PluggyPositionRawRep } from '../../adapters/repositories/pluggy-position-raw.rep.js'
+import { PluggyAccountRawRep } from '../../adapters/repositories/pluggy-account-raw.rep.js'
+import { PluggyAccountTransactionRawRep } from '../../adapters/repositories/pluggy-account-transaction-raw.rep.js'
+import { PluggyInvestmentTransactionRawRep } from '../../adapters/repositories/pluggy-investment-transaction-raw.rep.js'
+import { PluggyLoanRawRep } from '../../adapters/repositories/pluggy-loan-raw.rep.js'
 import { SyncPluggyPositionInteractor } from '../../interactors/pluggy-position/sync/sync-pluggy-position.interactor.js'
 import { LoadPluggyHistoryInteractor } from '../../interactors/pluggy-history/load/load-pluggy-history.interactor.js'
 import { AcceptPluggyWebhookInteractor } from '../../interactors/pluggy-webhook/accept/accept-pluggy-webhook.interactor.js'
@@ -114,6 +121,13 @@ export type AppContainer = {
   pluggyHistorySyncStateRep: PluggyHistorySyncStateRep
   pluggyWebhookEventRep: PluggyWebhookEventRep
   pluggyConsentRep: PluggyConsentRep
+  pluggyItemRawRep: PluggyItemRawRep
+  pluggyConsentRawRep: PluggyConsentRawRep
+  pluggyPositionRawRep: PluggyPositionRawRep
+  pluggyAccountRawRep: PluggyAccountRawRep
+  pluggyAccountTransactionRawRep: PluggyAccountTransactionRawRep
+  pluggyInvestmentTransactionRawRep: PluggyInvestmentTransactionRawRep
+  pluggyLoanRawRep: PluggyLoanRawRep
 }
 
 export type AppContainerInstance = AwilixContainer<AppContainer>
@@ -167,6 +181,13 @@ export function setupContainer(config: Config): AppContainerInstance {
     pluggyHistorySyncStateRep: asClass(PluggyHistorySyncStateRep).scoped(),
     pluggyWebhookEventRep: asClass(PluggyWebhookEventRep).scoped(),
     pluggyConsentRep: asClass(PluggyConsentRep).scoped(),
+    pluggyItemRawRep: asClass(PluggyItemRawRep).scoped(),
+    pluggyConsentRawRep: asClass(PluggyConsentRawRep).scoped(),
+    pluggyPositionRawRep: asClass(PluggyPositionRawRep).scoped(),
+    pluggyAccountRawRep: asClass(PluggyAccountRawRep).scoped(),
+    pluggyAccountTransactionRawRep: asClass(PluggyAccountTransactionRawRep).scoped(),
+    pluggyInvestmentTransactionRawRep: asClass(PluggyInvestmentTransactionRawRep).scoped(),
+    pluggyLoanRawRep: asClass(PluggyLoanRawRep).scoped(),
 
     syncPluggyPositionImpl: asClass(SyncPluggyPositionImpl).scoped(),
     loadPluggyHistoryImpl: asClass(LoadPluggyHistoryImpl).scoped(),

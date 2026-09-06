@@ -315,3 +315,115 @@ describe('PluggyInvestmentsGateway — updatedAt do investimento', () => {
     })
   })
 })
+
+// Change pluggy-complete-data-capture, spec pluggy-position-sync: campos antes descartados aqui
+// mesmo, antes de chegar à entity.
+describe('PluggyInvestmentsGateway — captura completa do schema Investment', () => {
+  it('lê vencimento, taxa, rentabilidade e metadata de um investimento de renda fixa', async () => {
+    const client = clientReturning({
+      page: 1,
+      total: 1,
+      totalPages: 1,
+      results: [
+        {
+          id: 'inv-1',
+          itemId: 'item-1',
+          type: 'FIXED_INCOME',
+          subtype: 'CDB',
+          name: 'CDB Banco X',
+          currencyCode: 'BRL',
+          balance: 1200.5,
+          date: '2026-08-01T00:00:00.000Z',
+          issuerCNPJ: '12.345.678/0001-00',
+          number: 'CDB-9988',
+          amountWithdrawal: 1180.0,
+          amountProfit: 42.1,
+          dueDate: '2028-01-01T00:00:00.000Z',
+          issuer: 'Banco X',
+          issueDate: '2026-01-01T00:00:00.000Z',
+          purchaseDate: '2026-01-02T00:00:00.000Z',
+          rate: 100.5,
+          rateType: 'CDI',
+          fixedAnnualRate: 12.5,
+          lastMonthRate: 1.02,
+          annualRate: 12.8,
+          lastTwelveMonthsRate: 12.9,
+          owner: 'Fulano de Tal',
+          metadata: { taxRegime: 'REGRESSIVO', proposalNumber: '123', processNumber: '456' },
+        },
+      ],
+    })
+
+    const [investment] = await collectInvestments(gateway.fetchInvestmentPages('item-1', client))
+    expect(investment?.issuerCnpj).toBe('12.345.678/0001-00')
+    expect(investment?.number).toBe('CDB-9988')
+    expect(investment?.amountWithdrawal).toEqual(new Decimal('1180'))
+    expect(investment?.amountProfit).toEqual(new Decimal('42.1'))
+    expect(investment?.dueDate).toEqual(new Date('2028-01-01T00:00:00.000Z'))
+    expect(investment?.issuer).toBe('Banco X')
+    expect(investment?.issueDate).toEqual(new Date('2026-01-01T00:00:00.000Z'))
+    expect(investment?.purchaseDate).toEqual(new Date('2026-01-02T00:00:00.000Z'))
+    expect(investment?.rate).toEqual(new Decimal('100.5'))
+    expect(investment?.rateType).toBe('CDI')
+    expect(investment?.fixedAnnualRate).toEqual(new Decimal('12.5'))
+    expect(investment?.lastMonthRate).toEqual(new Decimal('1.02'))
+    expect(investment?.annualRate).toEqual(new Decimal('12.8'))
+    expect(investment?.lastTwelveMonthsRate).toEqual(new Decimal('12.9'))
+    expect(investment?.owner).toBe('Fulano de Tal')
+    expect(investment?.metadata).toEqual({
+      taxRegime: 'REGRESSIVO',
+      proposalNumber: '123',
+      processNumber: '456',
+    })
+  })
+
+  it('aceita investimento sem nenhum dos campos de captura completa', async () => {
+    const client = clientReturning({
+      page: 1,
+      total: 1,
+      totalPages: 1,
+      results: [
+        {
+          id: 'inv-1',
+          itemId: 'item-1',
+          type: 'EQUITY',
+          name: 'VIVT3',
+          currencyCode: 'BRL',
+          balance: 304.5,
+          date: '2026-08-01T00:00:00.000Z',
+        },
+      ],
+    })
+
+    const [investment] = await collectInvestments(gateway.fetchInvestmentPages('item-1', client))
+    expect(investment?.dueDate).toBeUndefined()
+    expect(investment?.rate).toBeUndefined()
+    expect(investment?.amountProfit).toBeUndefined()
+    expect(investment?.metadata).toBeUndefined()
+  })
+
+  it('recusa nomeando o campo quando amountProfit vem presente com tipo errado', async () => {
+    const client = clientReturning({
+      page: 1,
+      total: 1,
+      totalPages: 1,
+      results: [
+        {
+          id: 'inv-1',
+          itemId: 'item-1',
+          type: 'EQUITY',
+          name: 'VIVT3',
+          currencyCode: 'BRL',
+          balance: 304.5,
+          date: '2026-08-01T00:00:00.000Z',
+          amountProfit: 'lucro',
+        },
+      ],
+    })
+
+    await expect(collectInvestments(gateway.fetchInvestmentPages('item-1', client))).rejects.toMatchObject({
+      errorType: 'PLUGGY_INVESTMENT_RESPONSE_INVALID',
+      details: { itemId: 'item-1', index: 0, field: 'amountProfit' },
+    })
+  })
+})

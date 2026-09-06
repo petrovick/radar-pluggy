@@ -49,6 +49,16 @@ describe('PluggyPositionRep.save', () => {
       }
       await alterMigration.up(queryInterface, Sequelize)
     }
+    const colsAfterFullCapture = await queryInterface.describeTable('pluggy_connector_positions')
+    if (!colsAfterFullCapture.due_date) {
+      const { createRequire } = await import('node:module')
+      const require = createRequire(import.meta.url)
+      const { Sequelize } = await import('sequelize')
+      const fullCaptureMigration = require('../../../src/infra/db/migrations/20260906180000-adicionar-campos-completos-em-pluggy-connector-positions.cjs') as {
+        up: (queryInterface: unknown, sequelizeLib: typeof Sequelize) => Promise<void>
+      }
+      await fullCaptureMigration.up(queryInterface, Sequelize)
+    }
   })
 
   afterAll(async () => {
@@ -72,6 +82,22 @@ describe('PluggyPositionRep.save', () => {
       institutionName: undefined,
       institutionNumber: undefined,
       quotaDate: new Date('2026-08-01T00:00:00.000Z'),
+      issuerCnpj: undefined,
+      number: undefined,
+      amountWithdrawal: undefined,
+      amountProfit: undefined,
+      dueDate: undefined,
+      issuer: undefined,
+      issueDate: undefined,
+      purchaseDate: undefined,
+      rate: undefined,
+      rateType: undefined,
+      fixedAnnualRate: undefined,
+      lastMonthRate: undefined,
+      annualRate: undefined,
+      lastTwelveMonthsRate: undefined,
+      owner: undefined,
+      metadata: undefined,
     }
   }
 
@@ -140,6 +166,43 @@ describe('PluggyPositionRep.save', () => {
     expect(row?.get('amount')).toBeNull()
     expect(row?.get('taxes')).toBeNull()
     expect(row?.get('taxes2')).toBeNull()
+  })
+
+  // Change pluggy-complete-data-capture, spec pluggy-position-sync: campos antes descartados no
+  // gateway agora chegam até a linha persistida.
+  it('grava vencimento, taxa e rentabilidade de renda fixa, com a precisão de cada coluna', async () => {
+    const itemId = randomUUID()
+    const investmentId = randomUUID()
+    itemIdsToCleanup.push(itemId)
+
+    await repository.save({
+      ...baseInput(itemId, investmentId),
+      dueDate: new Date('2028-01-01T00:00:00.000Z'),
+      rate: new Decimal('100.5'),
+      rateType: 'CDI',
+      amountProfit: new Decimal('42.10'),
+      issuer: 'Banco XYZ',
+    })
+
+    const row = await model.findOne({ where: { item_id: itemId, investment_id: investmentId } })
+    expect(row?.get('due_date')).toEqual(new Date('2028-01-01T00:00:00.000Z'))
+    expect(row?.get('rate')).toBe('100.50000000')
+    expect(row?.get('rate_type')).toBe('CDI')
+    expect(row?.get('amount_profit')).toBe('42.10')
+    expect(row?.get('issuer')).toBe('Banco XYZ')
+  })
+
+  it('campo de captura completa ausente fica NULL, nunca inventado', async () => {
+    const itemId = randomUUID()
+    const investmentId = randomUUID()
+    itemIdsToCleanup.push(itemId)
+
+    await repository.save(baseInput(itemId, investmentId))
+
+    const row = await model.findOne({ where: { item_id: itemId, investment_id: investmentId } })
+    expect(row?.get('due_date')).toBeNull()
+    expect(row?.get('rate')).toBeNull()
+    expect(row?.get('amount_profit')).toBeNull()
   })
 
   it('recusa gravação sem investmentId antes de tocar o banco', async () => {

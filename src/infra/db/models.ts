@@ -16,6 +16,13 @@ import { definePluggyHistoryCoverageModel } from './models/pluggy-history-covera
 import { definePluggyHistorySyncStateModel } from './models/pluggy-history-sync-state-model.js'
 import { definePluggyWebhookEventModel } from './models/pluggy-webhook-event-model.js'
 import { definePluggyConsentModel } from './models/pluggy-consent-model.js'
+import { definePluggyItemRawModel } from './models/pluggy-item-raw-model.js'
+import { definePluggyConsentRawModel } from './models/pluggy-consent-raw-model.js'
+import { definePluggyPositionRawModel } from './models/pluggy-position-raw-model.js'
+import { definePluggyAccountRawModel } from './models/pluggy-account-raw-model.js'
+import { definePluggyAccountTransactionRawModel } from './models/pluggy-account-transaction-raw-model.js'
+import { definePluggyInvestmentTransactionRawModel } from './models/pluggy-investment-transaction-raw-model.js'
+import { definePluggyLoanRawModel } from './models/pluggy-loan-raw-model.js'
 
 // Agregado de banco do processo, no mesmo formato do `oplab-radar-api` (`infra/db/models.ts`:
 // `{ Sequelize, connections, models }`) — é esse formato que `DefaultInteractorGatewayImpl` consome
@@ -39,6 +46,13 @@ export type ModelMap = {
   pluggyHistorySyncState: ReturnType<typeof definePluggyHistorySyncStateModel>
   pluggyWebhookEvent: ReturnType<typeof definePluggyWebhookEventModel>
   pluggyConsent: ReturnType<typeof definePluggyConsentModel>
+  pluggyItemRaw: ReturnType<typeof definePluggyItemRawModel>
+  pluggyConsentRaw: ReturnType<typeof definePluggyConsentRawModel>
+  pluggyPositionRaw: ReturnType<typeof definePluggyPositionRawModel>
+  pluggyAccountRaw: ReturnType<typeof definePluggyAccountRawModel>
+  pluggyAccountTransactionRaw: ReturnType<typeof definePluggyAccountTransactionRawModel>
+  pluggyInvestmentTransactionRaw: ReturnType<typeof definePluggyInvestmentTransactionRawModel>
+  pluggyLoanRaw: ReturnType<typeof definePluggyLoanRawModel>
 }
 
 export type DB = {
@@ -75,6 +89,13 @@ export function loadModels(config: DatabaseConnectionConfig): DB {
       pluggyHistorySyncState: definePluggyHistorySyncStateModel(main),
       pluggyWebhookEvent: definePluggyWebhookEventModel(main),
       pluggyConsent: definePluggyConsentModel(main),
+      pluggyItemRaw: definePluggyItemRawModel(main),
+      pluggyConsentRaw: definePluggyConsentRawModel(main),
+      pluggyPositionRaw: definePluggyPositionRawModel(main),
+      pluggyAccountRaw: definePluggyAccountRawModel(main),
+      pluggyAccountTransactionRaw: definePluggyAccountTransactionRawModel(main),
+      pluggyInvestmentTransactionRaw: definePluggyInvestmentTransactionRawModel(main),
+      pluggyLoanRaw: definePluggyLoanRawModel(main),
     },
   }
 

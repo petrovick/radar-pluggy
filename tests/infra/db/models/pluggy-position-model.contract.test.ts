@@ -13,6 +13,9 @@ const alterMigration = require('../../../../src/infra/db/migrations/202609031100
   up: (queryInterface: QueryInterface, sequelizeLib: typeof Sequelize) => Promise<void>
   down: (queryInterface: QueryInterface, sequelizeLib: typeof Sequelize) => Promise<void>
 }
+const fullCaptureMigration = require('../../../../src/infra/db/migrations/20260906180000-adicionar-campos-completos-em-pluggy-connector-positions.cjs') as {
+  up: (queryInterface: QueryInterface, sequelizeLib: typeof Sequelize) => Promise<void>
+}
 
 function createProxyQueryInterface(qi: QueryInterface, targetName: string, substituteName: string): QueryInterface {
   return new Proxy(qi, {
@@ -44,6 +47,10 @@ describe('contrato: model factory de pluggy_connector_positions vs. migration re
     const cols = await queryInterface.describeTable('pluggy_connector_positions')
     if (!cols.value) {
       await alterMigration.up(queryInterface, Sequelize)
+    }
+    const colsAfterPrecision = await queryInterface.describeTable('pluggy_connector_positions')
+    if (!colsAfterPrecision.due_date) {
+      await fullCaptureMigration.up(queryInterface, Sequelize)
     }
   })
 

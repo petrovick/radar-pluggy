@@ -116,6 +116,7 @@ export class SyncPluggyPositionInteractor {
         status: freshItem.status,
         executionStatus: freshItem.executionStatus,
         lastUpdatedAt: freshLastUpdatedAt,
+        raw: freshItem.raw,
       })
 
       this.gateway.logInfo('Sincronização de posição concluída')

@@ -118,4 +118,28 @@ describe('PluggyAccount', () => {
     expect(account.getStatus()).toBeUndefined()
     expect(account.getHolderType()).toBeUndefined()
   })
+
+  // Change pluggy-complete-data-capture, spec pluggy-account: campos antes descartados no gateway.
+  it('aceita criação com taxNumber, bankData e disaggregatedCreditLimits presentes', () => {
+    const account = PluggyAccount.create({
+      ...validAccountProps(),
+      taxNumber: '123.456.789-00',
+      bankData: { closingBalance: 1000, hasReservedBalance: true },
+      disaggregatedCreditLimits: [{ creditLineLimitType: 'LIMITE_CREDITO_TOTAL', usedAmount: 500 }],
+    })
+
+    expect(account.getTaxNumber()).toBe('123.456.789-00')
+    expect(account.getBankData()).toEqual({ closingBalance: 1000, hasReservedBalance: true })
+    expect(account.getDisaggregatedCreditLimits()).toEqual([
+      { creditLineLimitType: 'LIMITE_CREDITO_TOTAL', usedAmount: 500 },
+    ])
+  })
+
+  it('conta sem taxNumber/bankData/disaggregatedCreditLimits mantém os campos indefinidos', () => {
+    const account = PluggyAccount.create(validAccountProps())
+
+    expect(account.getTaxNumber()).toBeUndefined()
+    expect(account.getBankData()).toBeUndefined()
+    expect(account.getDisaggregatedCreditLimits()).toBeUndefined()
+  })
 })

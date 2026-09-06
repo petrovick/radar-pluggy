@@ -14,6 +14,10 @@ const creditMigration = require('../../../../src/infra/db/migrations/20260905120
   up: (queryInterface: QueryInterface, sequelizeLib: typeof Sequelize) => Promise<void>
   down: (queryInterface: QueryInterface, sequelizeLib: typeof Sequelize) => Promise<void>
 }
+const fullCaptureMigration = require('../../../../src/infra/db/migrations/20260906180100-adicionar-campos-completos-em-pluggy-connector-accounts.cjs') as {
+  up: (queryInterface: QueryInterface, sequelizeLib: typeof Sequelize) => Promise<void>
+  down: (queryInterface: QueryInterface, sequelizeLib: typeof Sequelize) => Promise<void>
+}
 
 function createProxyQueryInterface(qi: QueryInterface, targetName: string, substituteName: string): QueryInterface {
   return new Proxy(qi, {
@@ -42,6 +46,10 @@ describe('contrato: model factory de pluggy_connector_accounts vs. migration rea
     const cols = await queryInterface.describeTable('pluggy_connector_accounts')
     if (!cols.level) {
       await creditMigration.up(queryInterface, Sequelize)
+    }
+    const colsAfterCredit = await queryInterface.describeTable('pluggy_connector_accounts')
+    if (!colsAfterCredit.tax_number) {
+      await fullCaptureMigration.up(queryInterface, Sequelize)
     }
   })
 

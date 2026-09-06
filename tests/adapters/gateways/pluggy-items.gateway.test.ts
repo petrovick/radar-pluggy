@@ -33,6 +33,8 @@ describe('PluggyItemsGateway.fetchItem', () => {
       lastUpdatedAt: '2026-08-01T00:00:00.000Z',
       // `statusDetail` ausente é item sem ressalva alguma — normal, não erro.
       products: {},
+      // Change pluggy-complete-data-capture, spec pluggy-raw-payload-audit: payload bruto inteiro.
+      raw: { status: 'UPDATED', executionStatus: 'SUCCESS', lastUpdatedAt: '2026-08-01T00:00:00.000Z' },
     })
   })
 

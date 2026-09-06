@@ -126,4 +126,55 @@ describe('PluggyConsentsGateway', () => {
       errorType: 'PLUGGY_CONSENTS_TIMEOUT',
     })
   })
+
+  // Change pluggy-complete-data-capture, spec pluggy-consent: escopo autorizado.
+  it('lê products e openFinancePermissionsGranted quando presentes', async () => {
+    const client = clientReturning({
+      page: 1,
+      total: 1,
+      totalPages: 1,
+      results: [
+        {
+          id: 'consent-1',
+          itemId: 'item-1',
+          createdAt: '2026-01-01T00:00:00.000Z',
+          products: ['ACCOUNTS', 'INVESTMENTS'],
+          openFinancePermissionsGranted: ['ACCOUNTS_READ', 'INVESTMENTS_READ'],
+        },
+      ],
+    })
+
+    const [consent] = await gateway.fetchConsents('item-1', client)
+    expect(consent?.products).toEqual(['ACCOUNTS', 'INVESTMENTS'])
+    expect(consent?.openFinancePermissionsGranted).toEqual(['ACCOUNTS_READ', 'INVESTMENTS_READ'])
+  })
+
+  it('consentimento sem products/permissions mantém os dois indefinidos', async () => {
+    const client = clientReturning({
+      page: 1,
+      total: 1,
+      totalPages: 1,
+      results: [{ id: 'consent-1', itemId: 'item-1', createdAt: '2026-01-01T00:00:00.000Z' }],
+    })
+
+    const [consent] = await gateway.fetchConsents('item-1', client)
+    expect(consent?.products).toBeUndefined()
+    expect(consent?.openFinancePermissionsGranted).toBeUndefined()
+  })
+
+  it('recusa quando products vem com item que não é string', async () => {
+    const client = clientReturning({
+      page: 1,
+      total: 1,
+      totalPages: 1,
+      results: [
+        { id: 'consent-1', itemId: 'item-1', createdAt: '2026-01-01T00:00:00.000Z', products: ['ACCOUNTS', 123] },
+      ],
+    })
+
+    await expect(gateway.fetchConsents('item-1', client)).rejects.toMatchObject({
+      errorType: 'PLUGGY_CONSENT_RESPONSE_INVALID',
+      details: { itemId: 'item-1', index: 0, field: 'products' },
+    })
+  })
 })

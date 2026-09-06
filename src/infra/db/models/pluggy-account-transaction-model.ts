@@ -23,6 +23,7 @@ export interface PluggyAccountTransactionRow {
   source_order: number | null
   merchant: Record<string, unknown> | null
   payment_data: Record<string, unknown> | null
+  credit_card_metadata: Record<string, unknown> | null
   provider_created_at: Date
   provider_updated_at: Date
   created_at: Date
@@ -55,6 +56,7 @@ export function definePluggyAccountTransactionModel(sequelize: Sequelize) {
       source_order: { type: DataTypes.INTEGER, allowNull: true },
       merchant: { type: DataTypes.JSON, allowNull: true },
       payment_data: { type: DataTypes.JSON, allowNull: true },
+      credit_card_metadata: { type: DataTypes.JSON, allowNull: true },
       provider_created_at: { type: DataTypes.DATE(3), allowNull: false },
       provider_updated_at: { type: DataTypes.DATE(3), allowNull: false },
       created_at: { type: DataTypes.DATE(3), allowNull: false },

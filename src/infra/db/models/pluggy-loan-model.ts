@@ -22,6 +22,21 @@ export interface PluggyLoanRow {
   due_installments: number | null
   past_due_installments: number | null
   outstanding_balance: string | null
+  ipoc_code: string | null
+  disbursement_dates: string[] | null
+  first_installment_due_date: Date | null
+  cet: string | null
+  installment_periodicity: string | null
+  installment_periodicity_additional_info: string | null
+  amortization_scheduled: string | null
+  amortization_scheduled_additional_info: string | null
+  cnpj_consignee: string | null
+  interest_rates: Record<string, unknown>[] | null
+  contracted_fees: Record<string, unknown>[] | null
+  contracted_finance_charges: Record<string, unknown>[] | null
+  warranties: Record<string, unknown>[] | null
+  installments: Record<string, unknown> | null
+  payments: Record<string, unknown> | null
   created_at: Date
   updated_at: Date
 }
@@ -48,6 +63,21 @@ export function definePluggyLoanModel(sequelize: Sequelize) {
       due_installments: { type: DataTypes.INTEGER.UNSIGNED, allowNull: true },
       past_due_installments: { type: DataTypes.INTEGER.UNSIGNED, allowNull: true },
       outstanding_balance: { type: DataTypes.DECIMAL(14, 2), allowNull: true },
+      ipoc_code: { type: DataTypes.STRING(60), allowNull: true },
+      disbursement_dates: { type: DataTypes.JSON, allowNull: true },
+      first_installment_due_date: { type: DataTypes.DATE(3), allowNull: true },
+      cet: { type: DataTypes.DECIMAL(20, 8), allowNull: true },
+      installment_periodicity: { type: DataTypes.STRING(40), allowNull: true },
+      installment_periodicity_additional_info: { type: DataTypes.STRING(255), allowNull: true },
+      amortization_scheduled: { type: DataTypes.STRING(40), allowNull: true },
+      amortization_scheduled_additional_info: { type: DataTypes.STRING(255), allowNull: true },
+      cnpj_consignee: { type: DataTypes.STRING(20), allowNull: true },
+      interest_rates: { type: DataTypes.JSON, allowNull: true },
+      contracted_fees: { type: DataTypes.JSON, allowNull: true },
+      contracted_finance_charges: { type: DataTypes.JSON, allowNull: true },
+      warranties: { type: DataTypes.JSON, allowNull: true },
+      installments: { type: DataTypes.JSON, allowNull: true },
+      payments: { type: DataTypes.JSON, allowNull: true },
       created_at: { type: DataTypes.DATE(3), allowNull: false },
       updated_at: { type: DataTypes.DATE(3), allowNull: false },
     },

@@ -26,6 +26,9 @@ const ALLOWED_CREATE_FIELDS = new Set([
   'isLimitFlexible',
   'status',
   'holderType',
+  'taxNumber',
+  'bankData',
+  'disaggregatedCreditLimits',
 ])
 
 export interface CreatePluggyAccountProps {
@@ -42,9 +45,7 @@ export interface CreatePluggyAccountProps {
   providerCreatedAt: Date
   providerUpdatedAt: Date
   // Campos de `CreditData` (SDK `pluggy-sdk`, `account.d.ts`), presentes só quando a conta é do tipo
-  // `CREDIT` e a Pluggy devolve `creditData` não nulo. `disaggregatedCreditLimits` fica de fora de
-  // propósito: é lista aninhada complexa, só devolvida por conector Open Finance — fora do escopo
-  // desta tarefa.
+  // `CREDIT` e a Pluggy devolve `creditData` não nulo.
   level?: string | undefined
   brand?: string | undefined
   brandAdditionalInfo?: string | undefined
@@ -57,6 +58,14 @@ export interface CreatePluggyAccountProps {
   isLimitFlexible?: boolean | undefined
   status?: 'ACTIVE' | 'BLOCKED' | 'CANCELLED' | undefined
   holderType?: 'MAIN' | 'ADDITIONAL' | undefined
+  // Campos capturados na change pluggy-complete-data-capture (spec pluggy-account) — antes
+  // descartados no gateway antes de chegar aqui. `taxNumber` é CPF/CNPJ do titular — decisão
+  // explícita do usuário. `bankData`/`disaggregatedCreditLimits` são objetos aninhados complexos do
+  // fornecedor, carregados inteiros (mesmo tratamento de `merchant`/`paymentData` em
+  // pluggy-account-transaction.ts): sem tipagem campo a campo, sem lógica de negócio nossa em cima.
+  taxNumber?: string | undefined
+  bankData?: Record<string, unknown> | undefined
+  disaggregatedCreditLimits?: Record<string, unknown>[] | undefined
 }
 
 export class PluggyAccount {
@@ -84,6 +93,9 @@ export class PluggyAccount {
   private readonly isLimitFlexible: boolean | undefined
   private readonly status: 'ACTIVE' | 'BLOCKED' | 'CANCELLED' | undefined
   private readonly holderType: 'MAIN' | 'ADDITIONAL' | undefined
+  private readonly taxNumber: string | undefined
+  private readonly bankData: Record<string, unknown> | undefined
+  private readonly disaggregatedCreditLimits: Record<string, unknown>[] | undefined
 
   // Recebe `props` por nome, não por posição: com 12 campos de crédito opcionais — quatro `Decimal`
   // e três `string` consecutivos —, um construtor posicional deixaria uma transposição entre dois
@@ -113,6 +125,9 @@ export class PluggyAccount {
     this.isLimitFlexible = props.isLimitFlexible
     this.status = props.status
     this.holderType = props.holderType
+    this.taxNumber = props.taxNumber
+    this.bankData = props.bankData
+    this.disaggregatedCreditLimits = props.disaggregatedCreditLimits
   }
 
   static create(props: CreatePluggyAccountProps): PluggyAccount {
@@ -235,6 +250,18 @@ export class PluggyAccount {
 
   getHolderType(): 'MAIN' | 'ADDITIONAL' | undefined {
     return this.holderType
+  }
+
+  getTaxNumber(): string | undefined {
+    return this.taxNumber
+  }
+
+  getBankData(): Record<string, unknown> | undefined {
+    return this.bankData
+  }
+
+  getDisaggregatedCreditLimits(): Record<string, unknown>[] | undefined {
+    return this.disaggregatedCreditLimits
   }
 }
 

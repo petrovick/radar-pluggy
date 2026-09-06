@@ -1,6 +1,6 @@
 import { Decimal } from 'decimal.js'
 import type { Model, ModelStatic } from 'sequelize'
-import { PluggyPosition } from '../../entities/pluggy-position.js'
+import { PluggyPosition, type PluggyPositionMetadata } from '../../entities/pluggy-position.js'
 import type { AppContainer, GetTransaction } from '../../infra/bootstrap/register.js'
 import { DB_NAMES } from '../../infra/db/models.js'
 import type { PluggyPositionRow } from '../../infra/db/models/pluggy-position-model.js'
@@ -25,6 +25,22 @@ export interface SavePluggyPositionInput {
   institutionName: string | undefined
   institutionNumber: string | undefined
   quotaDate: Date
+  issuerCnpj: string | undefined
+  number: string | undefined
+  amountWithdrawal: Decimal | undefined
+  amountProfit: Decimal | undefined
+  dueDate: Date | undefined
+  issuer: string | undefined
+  issueDate: Date | undefined
+  purchaseDate: Date | undefined
+  rate: Decimal | undefined
+  rateType: string | undefined
+  fixedAnnualRate: Decimal | undefined
+  lastMonthRate: Decimal | undefined
+  annualRate: Decimal | undefined
+  lastTwelveMonthsRate: Decimal | undefined
+  owner: string | undefined
+  metadata: PluggyPositionMetadata | undefined
 }
 
 // Formato de repositório do `oplab-radar-api` (`adapters/repositories/car.repository.ts`): recebe a bag
@@ -64,6 +80,22 @@ export class PluggyPositionRep {
         status: input.status,
         institutionName: input.institutionName,
         institutionNumber: input.institutionNumber,
+        issuerCnpj: input.issuerCnpj,
+        number: input.number,
+        amountWithdrawal: input.amountWithdrawal,
+        amountProfit: input.amountProfit,
+        dueDate: input.dueDate,
+        issuer: input.issuer,
+        issueDate: input.issueDate,
+        purchaseDate: input.purchaseDate,
+        rate: input.rate,
+        rateType: input.rateType,
+        fixedAnnualRate: input.fixedAnnualRate,
+        lastMonthRate: input.lastMonthRate,
+        annualRate: input.annualRate,
+        lastTwelveMonthsRate: input.lastTwelveMonthsRate,
+        owner: input.owner,
+        metadata: input.metadata,
       }),
     })
     const now = new Date()
@@ -105,6 +137,22 @@ function toRow(position: PluggyPosition, now: Date): PluggyPositionRow {
     institution_name: position.getInstitutionName() ?? null,
     institution_number: position.getInstitutionNumber() ?? null,
     quota_date: position.getQuotaDate(),
+    issuer_cnpj: position.getIssuerCnpj() ?? null,
+    number: position.getNumber() ?? null,
+    amount_withdrawal: position.getAmountWithdrawal()?.toFixed(2) ?? null,
+    amount_profit: position.getAmountProfit()?.toFixed(2) ?? null,
+    due_date: position.getDueDate() ?? null,
+    issuer: position.getIssuer() ?? null,
+    issue_date: position.getIssueDate() ?? null,
+    purchase_date: position.getPurchaseDate() ?? null,
+    rate: position.getRate()?.toFixed(8) ?? null,
+    rate_type: position.getRateType() ?? null,
+    fixed_annual_rate: position.getFixedAnnualRate()?.toFixed(8) ?? null,
+    last_month_rate: position.getLastMonthRate()?.toFixed(8) ?? null,
+    annual_rate: position.getAnnualRate()?.toFixed(8) ?? null,
+    last_twelve_months_rate: position.getLastTwelveMonthsRate()?.toFixed(8) ?? null,
+    owner: position.getOwner() ?? null,
+    metadata: (position.getMetadata() as Record<string, unknown> | undefined) ?? null,
     created_at: now,
     updated_at: now,
   } as PluggyPositionRow
@@ -132,6 +180,23 @@ export function toEntity(row: PluggyPositionRow): PluggyPosition {
       status: row.status ?? undefined,
       institutionName: row.institution_name ?? undefined,
       institutionNumber: row.institution_number ?? undefined,
+      issuerCnpj: row.issuer_cnpj ?? undefined,
+      number: row.number ?? undefined,
+      amountWithdrawal: row.amount_withdrawal !== null ? new Decimal(row.amount_withdrawal) : undefined,
+      amountProfit: row.amount_profit !== null ? new Decimal(row.amount_profit) : undefined,
+      dueDate: row.due_date ?? undefined,
+      issuer: row.issuer ?? undefined,
+      issueDate: row.issue_date ?? undefined,
+      purchaseDate: row.purchase_date ?? undefined,
+      rate: row.rate !== null ? new Decimal(row.rate) : undefined,
+      rateType: row.rate_type ?? undefined,
+      fixedAnnualRate: row.fixed_annual_rate !== null ? new Decimal(row.fixed_annual_rate) : undefined,
+      lastMonthRate: row.last_month_rate !== null ? new Decimal(row.last_month_rate) : undefined,
+      annualRate: row.annual_rate !== null ? new Decimal(row.annual_rate) : undefined,
+      lastTwelveMonthsRate:
+        row.last_twelve_months_rate !== null ? new Decimal(row.last_twelve_months_rate) : undefined,
+      owner: row.owner ?? undefined,
+      metadata: (row.metadata as PluggyPositionMetadata | null) ?? undefined,
     }),
   })
 }

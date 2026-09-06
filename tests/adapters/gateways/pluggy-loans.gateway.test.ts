@@ -200,4 +200,82 @@ describe('PluggyLoansGateway.fetchLoansPage', () => {
     expect(page2.page).toBe(2)
     expect(page2.results[0]?.loanId).toBe('loan-2')
   })
+
+  // Change pluggy-complete-data-capture, spec pluggy-loan: schema completo do contrato.
+  it('lê o schema completo do contrato quando presente', async () => {
+    const client = clientReturning({
+      page: 1,
+      total: 1,
+      totalPages: 1,
+      results: [
+        rawLoan({
+          ipocCode: 'IPOC-123',
+          disbursementDates: ['2026-01-01T00:00:00.000Z'],
+          firstInstallmentDueDate: '2026-02-01T00:00:00.000Z',
+          CET: 15.5,
+          installmentPeriodicity: 'MONTHLY',
+          amortizationScheduled: 'SAC',
+          cnpjConsignee: '12.345.678/0001-00',
+          interestRates: [{ taxType: 'NOMINAL' }],
+          contractedFees: [{ name: 'Tarifa' }],
+          contractedFinanceCharges: [{ type: 'IOF' }],
+          warranties: [{ type: 'AVAL' }],
+        }),
+      ],
+    })
+
+    const page = await gateway.fetchLoansPage('item-1', client)
+    const loan = page.results[0]
+    expect(loan?.ipocCode).toBe('IPOC-123')
+    expect(loan?.disbursementDates).toEqual([new Date('2026-01-01T00:00:00.000Z')])
+    expect(loan?.firstInstallmentDueDate).toEqual(new Date('2026-02-01T00:00:00.000Z'))
+    expect(loan?.cet).toEqual(new Decimal('15.5'))
+    expect(loan?.installmentPeriodicity).toBe('MONTHLY')
+    expect(loan?.amortizationScheduled).toBe('SAC')
+    expect(loan?.cnpjConsignee).toBe('12.345.678/0001-00')
+    expect(loan?.interestRates).toEqual([{ taxType: 'NOMINAL' }])
+    expect(loan?.contractedFees).toEqual([{ name: 'Tarifa' }])
+    expect(loan?.contractedFinanceCharges).toEqual([{ type: 'IOF' }])
+    expect(loan?.warranties).toEqual([{ type: 'AVAL' }])
+    expect(loan?.installments).toEqual({
+      totalNumberOfInstallments: 24,
+      paidInstallments: 5,
+      dueInstallments: 19,
+      pastDueInstallments: 0,
+    })
+    expect(loan?.payments).toEqual({ contractOutstandingBalance: 8000.5 })
+  })
+
+  it('empréstimo sem nenhum campo do schema completo mantém tudo indefinido', async () => {
+    const client = clientReturning({
+      page: 1,
+      total: 1,
+      totalPages: 1,
+      results: [
+        { id: 'loan-2', itemId: 'item-1', productName: 'Financiamento', kind: 'FINANCING', currencyCode: 'BRL' },
+      ],
+    })
+
+    const page = await gateway.fetchLoansPage('item-1', client)
+    const loan = page.results[0]
+    expect(loan?.ipocCode).toBeUndefined()
+    expect(loan?.disbursementDates).toBeUndefined()
+    expect(loan?.interestRates).toBeUndefined()
+    expect(loan?.installments).toBeUndefined()
+    expect(loan?.payments).toBeUndefined()
+  })
+
+  it('recusa quando um item de disbursementDates é ilegível como data', async () => {
+    const client = clientReturning({
+      page: 1,
+      total: 1,
+      totalPages: 1,
+      results: [rawLoan({ disbursementDates: ['não é data'] })],
+    })
+
+    await expect(gateway.fetchLoansPage('item-1', client)).rejects.toMatchObject({
+      errorType: 'PLUGGY_LOAN_RESPONSE_INVALID',
+      details: { itemId: 'item-1', index: 0, field: 'disbursementDates[0]' },
+    })
+  })
 })

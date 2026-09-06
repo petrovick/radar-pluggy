@@ -37,6 +37,8 @@ describe('PluggyConsentRep.save', () => {
       grantedAt: new Date('2026-01-01T00:00:00.000Z'),
       expiresAt: undefined,
       revokedAt: undefined,
+      products: undefined,
+      openFinancePermissionsGranted: undefined,
     })
     await repository.save({
       itemId,
@@ -44,6 +46,8 @@ describe('PluggyConsentRep.save', () => {
       grantedAt: new Date('2026-02-01T00:00:00.000Z'),
       expiresAt: undefined,
       revokedAt: new Date('2026-02-15T00:00:00.000Z'),
+      products: undefined,
+      openFinancePermissionsGranted: undefined,
     })
 
     const rows = await model.findAll({ where: { item_id: itemId } })
@@ -63,6 +67,8 @@ describe('PluggyConsentRep.save', () => {
       grantedAt: new Date('2026-01-01T00:00:00.000Z'),
       expiresAt: undefined,
       revokedAt: undefined,
+      products: undefined,
+      openFinancePermissionsGranted: undefined,
     })
 
     await expect(
@@ -72,6 +78,8 @@ describe('PluggyConsentRep.save', () => {
         grantedAt: new Date('2026-01-02T00:00:00.000Z'),
         expiresAt: undefined,
         revokedAt: undefined,
+        products: undefined,
+        openFinancePermissionsGranted: undefined,
       }),
     ).rejects.toMatchObject({
       errorType: 'PLUGGY_CONSENT_ID_CONFLICT',
@@ -80,5 +88,25 @@ describe('PluggyConsentRep.save', () => {
 
     const rows = await model.findAll({ where: { item_id: secondItemId } })
     expect(rows).toHaveLength(0)
+  })
+
+  // Change pluggy-complete-data-capture, spec pluggy-consent: escopo autorizado.
+  it('salva e recupera products e openFinancePermissionsGranted', async () => {
+    const itemId = randomUUID()
+    itemIdsToCleanup.push(itemId)
+
+    await repository.save({
+      itemId,
+      consentId: randomUUID(),
+      grantedAt: new Date('2026-01-01T00:00:00.000Z'),
+      expiresAt: undefined,
+      revokedAt: undefined,
+      products: ['ACCOUNTS', 'INVESTMENTS'],
+      openFinancePermissionsGranted: ['ACCOUNTS_READ', 'INVESTMENTS_READ'],
+    })
+
+    const row = await model.findOne({ where: { item_id: itemId } })
+    expect(row?.get('products')).toEqual(['ACCOUNTS', 'INVESTMENTS'])
+    expect(row?.get('open_finance_permissions_granted')).toEqual(['ACCOUNTS_READ', 'INVESTMENTS_READ'])
   })
 })
