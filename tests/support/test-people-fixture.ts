@@ -1,4 +1,4 @@
-import { DataTypes, type QueryInterface } from 'sequelize'
+import { DataTypes, UniqueConstraintError, type QueryInterface } from 'sequelize'
 
 /**
  * Fixture exclusiva para ambiente de teste isolado (_test).
@@ -24,14 +24,15 @@ export async function ensureTestPeopleFixture(queryInterface: QueryInterface): P
     })
   }
 
-  const existing = await queryInterface.sequelize.query(
-    'SELECT id FROM people LIMIT 1',
-    { type: 'SELECT' }
-  )
-
-  if (!existing || (existing as unknown[]).length === 0) {
-    await queryInterface.bulkInsert('people', [
-      { id: 1, username: 'usuario-teste' },
-    ])
+  // Sem SELECT-then-INSERT: dois arquivos de teste chamam esta fixture em paralelo (vitest roda
+  // arquivos em workers concorrentes) — um `SELECT` prévio teria essa mesma corrida, só que mais
+  // larga. A garantia de unicidade real é a constraint do banco; `UniqueConstraintError` aqui
+  // significa "outro worker já inseriu", não um erro de verdade.
+  try {
+    await queryInterface.bulkInsert('people', [{ id: 1, username: 'usuario-teste' }])
+  } catch (error) {
+    if (!(error instanceof UniqueConstraintError)) {
+      throw error
+    }
   }
 }
