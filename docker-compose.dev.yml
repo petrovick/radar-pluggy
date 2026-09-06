@@ -1,0 +1,13 @@
+services:
+  radar-pluggy:
+    build:
+      target: dev
+    environment:
+      NODE_ENV: development
+      WATCH_FILES: ${WATCH_FILES:-1}
+      DEBUG: ${DEBUG:-}
+    volumes:
+      - '.:/application'
+      - '/application/node_modules'
+    ports:
+      - '127.0.0.1:9253:9251'

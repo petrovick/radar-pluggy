@@ -1,0 +1,27 @@
+{
+  "main": {
+    "username": "INFORME_AQUI_USUARIO_BANCO",
+    "password": "INFORME_AQUI_SENHA_BANCO",
+    "database": "oplab_radar",
+    "dialect": "mysql",
+    "port": 3306,
+    "replication": {
+      "read": [
+        {
+          "host": "mysql"
+        }
+      ],
+      "write": {
+        "host": "mysql"
+      }
+    },
+    "pool": {
+      "min": 10,
+      "max": 10
+    },
+    "logging": false,
+    "dialectOptions": {
+      "ssl": false
+    }
+  }
+}

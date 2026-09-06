@@ -1,0 +1,86 @@
+import { createRequire } from 'node:module'
+import { Sequelize, type QueryInterface } from 'sequelize'
+import { afterAll, beforeAll, describe, expect, it } from 'vitest'
+import { definePluggyWebhookEventModel } from '../../../../src/infra/db/models/pluggy-webhook-event-model.js'
+import { createDatabaseConnection } from '../../../../src/infra/db/database.js'
+import { testDatabaseConfig } from '../../../support/test-database-config.js'
+
+const require = createRequire(import.meta.url)
+const migration = require('../../../../src/infra/db/migrations/20260903180000-criar-pluggy-connector-webhook-events.cjs') as {
+  up: (queryInterface: QueryInterface, sequelizeLib: typeof Sequelize) => Promise<void>
+  down: (queryInterface: QueryInterface, sequelizeLib: typeof Sequelize) => Promise<void>
+}
+
+function createProxyQueryInterface(qi: QueryInterface, targetName: string, substituteName: string): QueryInterface {
+  return new Proxy(qi, {
+    get(target, prop, receiver) {
+      const orig = Reflect.get(target, prop, receiver)
+      if (typeof orig === 'function') {
+        return (...args: unknown[]) => {
+          const mappedArgs = args.map((arg) => (arg === targetName ? substituteName : arg))
+          return orig.apply(target, mappedArgs)
+        }
+      }
+      return orig
+    },
+  })
+}
+
+describe('contrato: model factory de pluggy_connector_webhook_events vs. migration real', () => {
+  const sequelize = createDatabaseConnection(testDatabaseConfig())
+  const queryInterface = sequelize.getQueryInterface()
+
+  beforeAll(async () => {
+    const tables = await queryInterface.showAllTables()
+    if (!tables.includes('pluggy_connector_webhook_events')) {
+      try {
+        await migration.up(queryInterface, Sequelize)
+      } catch {
+        // Ignora corrida paralela
+      }
+    }
+  })
+
+  afterAll(async () => {
+    await sequelize.close()
+  })
+
+  it('toda coluna da migration real tem uma coluna correspondente no model, e vice-versa', async () => {
+    const realColumns = await queryInterface.describeTable('pluggy_connector_webhook_events')
+    const model = definePluggyWebhookEventModel(sequelize)
+
+    expect(Object.keys(model.getAttributes()).sort()).toEqual(Object.keys(realColumns).sort())
+  })
+
+  it('allowNull do model bate com o allowNull real de cada coluna', async () => {
+    const realColumns = await queryInterface.describeTable('pluggy_connector_webhook_events')
+    const model = definePluggyWebhookEventModel(sequelize)
+    const attributes: Record<string, { allowNull?: boolean } | undefined> = model.getAttributes()
+
+    for (const [column, definition] of Object.entries(realColumns)) {
+      const attribute = attributes[column]
+      expect(attribute, `coluna ${column} existe na migration mas não no model`).toBeDefined()
+      expect(attribute?.allowNull, `allowNull de ${column} diverge entre model e migration`).toBe(
+        definition.allowNull,
+      )
+    }
+  })
+
+  it('down da migration desfaz índices e remove a tabela', async () => {
+    const testTableName = 'test_down_webhook_events'
+    const tables = await queryInterface.showAllTables()
+    if (tables.includes(testTableName)) {
+      await queryInterface.dropTable(testTableName)
+    }
+
+    const proxyQI = createProxyQueryInterface(queryInterface, 'pluggy_connector_webhook_events', testTableName)
+
+    await migration.up(proxyQI, Sequelize)
+    const tablesAfterUp = await queryInterface.showAllTables()
+    expect(tablesAfterUp).toContain(testTableName)
+
+    await migration.down(proxyQI, Sequelize)
+    const tablesAfterDown = await queryInterface.showAllTables()
+    expect(tablesAfterDown).not.toContain(testTableName)
+  })
+})

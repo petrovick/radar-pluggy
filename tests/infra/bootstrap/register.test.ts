@@ -1,0 +1,59 @@
+import { afterAll, describe, expect, it } from 'vitest'
+import { setupContainer } from '../../../src/infra/bootstrap/register.js'
+import { createScope } from '../../../src/infra/bootstrap/scope.js'
+import { SyncPluggyPositionInteractor } from '../../../src/interactors/pluggy-position/sync/sync-pluggy-position.interactor.js'
+import { RegisterPluggyCredentialInteractor } from '../../../src/interactors/pluggy-credential/register/register-pluggy-credential.interactor.js'
+import { CheckPluggyCredentialInteractor } from '../../../src/interactors/pluggy-credential/check/check-pluggy-credential.interactor.js'
+import { CheckHealthInteractor } from '../../../src/interactors/health/check/check-health.interactor.js'
+import { PersonRep } from '../../../src/adapters/repositories/person.rep.js'
+import { testAppConfig } from '../../support/test-app-config.js'
+
+// Registro errado no container só aparece na hora de resolver — chave com typo, dependência que
+// ninguém registrou, ciclo. Este teste resolve a raiz do fluxo e força a construção da árvore
+// inteira (interactor → impl → gateways/reps → db/logger), sem tocar a rede nem o banco.
+describe('container do processo', () => {
+  const container = setupContainer(testAppConfig())
+
+  afterAll(async () => {
+    await container.resolve('db').connections.main?.close()
+  })
+
+  it('resolve o interactor de sincronização de posição com a árvore inteira de dependências', () => {
+    const scope = createScope(container, 'test-request-id')
+
+    const interactor = scope.resolve('syncPluggyPositionInteractor')
+
+    expect(interactor).toBeInstanceOf(SyncPluggyPositionInteractor)
+  })
+
+  it('resolve os casos de uso de credencial com a árvore inteira de dependências', () => {
+    const scope = createScope(container, 'test-request-id')
+
+    expect(scope.resolve('registerPluggyCredentialInteractor')).toBeInstanceOf(RegisterPluggyCredentialInteractor)
+    expect(scope.resolve('checkPluggyCredentialInteractor')).toBeInstanceOf(CheckPluggyCredentialInteractor)
+  })
+
+  it('resolve o caso de uso de checagem de saúde com a árvore inteira de dependências', () => {
+    const scope = createScope(container, 'test-request-id')
+
+    expect(scope.resolve('checkHealthInteractor')).toBeInstanceOf(CheckHealthInteractor)
+  })
+
+  it('resolve o repositório de pessoa, que o middleware de autenticação tira do escopo', () => {
+    const scope = createScope(container, 'test-request-id')
+
+    expect(scope.resolve('personRep')).toBeInstanceOf(PersonRep)
+  })
+
+  it('cada escopo tem seu próprio detentor de transação', () => {
+    const scopeA = createScope(container, 'request-a')
+    const scopeB = createScope(container, 'request-b')
+
+    expect(scopeA.resolve('getTransaction')('main')).toBeNull()
+    scopeA.resolve('setTransaction')('main', { commit: async () => {} } as never)
+
+    expect(scopeA.resolve('getTransaction')('main')).not.toBeNull()
+    // Escopo irmão não enxerga a transação do outro — dois eventos simultâneos não se misturam.
+    expect(scopeB.resolve('getTransaction')('main')).toBeNull()
+  })
+})

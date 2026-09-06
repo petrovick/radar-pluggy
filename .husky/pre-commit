@@ -1,0 +1,12 @@
+npm run lint
+npm run type-check
+npm test
+
+if command -v gitleaks >/dev/null 2>&1; then
+  gitleaks protect --staged -v --redact=100
+elif command -v docker >/dev/null 2>&1; then
+  docker run --rm -v "$(pwd):/path" -w /path zricethezav/gitleaks:latest protect --staged -v --redact=100
+else
+  echo "[ERRO] Scanner Gitleaks obrigatório não encontrado no PATH nem via Docker." >&2
+  exit 1
+fi

@@ -1,0 +1,148 @@
+import { Decimal } from 'decimal.js'
+import type { Model, ModelStatic } from 'sequelize'
+import { PluggyPosition } from '../../entities/pluggy-position.js'
+import type { AppContainer, GetTransaction } from '../../infra/bootstrap/register.js'
+import { DB_NAMES } from '../../infra/db/models.js'
+import type { PluggyPositionRow } from '../../infra/db/models/pluggy-position-model.js'
+
+export interface SavePluggyPositionInput {
+  investmentId: string
+  itemId: string
+  type: string
+  subtype: string | undefined
+  name: string
+  code: string | undefined
+  isin: string | undefined
+  currencyCode: string
+  balance: Decimal
+  quantity: Decimal | undefined
+  amountOriginal: Decimal | undefined
+  value?: Decimal | undefined
+  amount?: Decimal | undefined
+  taxes?: Decimal | undefined
+  taxes2?: Decimal | undefined
+  status: string | undefined
+  institutionName: string | undefined
+  institutionNumber: string | undefined
+  quotaDate: Date
+}
+
+// Formato de repositório do `oplab-radar-api` (`adapters/repositories/car.repository.ts`): recebe a bag
+// do container, resolve o model dela e lê a transação vigente do escopo em cada operação. A transação
+// nunca chega por parâmetro — quem a abriu foi o impl do gateway do caso de uso.
+export class PluggyPositionRep {
+  private readonly model: ModelStatic<Model<PluggyPositionRow>>
+  private readonly getTransaction: GetTransaction
+
+  constructor(params: AppContainer) {
+    this.model = params.db.models.pluggyPosition
+    this.getTransaction = params.getTransaction
+  }
+
+  // Upsert por (item_id, investment_id) sobre a constraint real do banco — fotografia mais recente,
+  // sem histórico (design.md D2, sincronizacao-posicao-pluggy). findOrCreate + update, nunca
+  // "buscar e se não achar criar" em dois passos separados (modelagem-de-dados, idempotência).
+  async save(input: SavePluggyPositionInput): Promise<PluggyPosition> {
+    const draft = PluggyPosition.create({
+      investmentId: input.investmentId,
+      itemId: input.itemId,
+      type: input.type,
+      name: input.name,
+      currencyCode: input.currencyCode,
+      balance: input.balance,
+      quotaDate: input.quotaDate,
+      ...withDefined({
+        subtype: input.subtype,
+        code: input.code,
+        isin: input.isin,
+        quantity: input.quantity,
+        amountOriginal: input.amountOriginal,
+        value: input.value,
+        amount: input.amount,
+        taxes: input.taxes,
+        taxes2: input.taxes2,
+        status: input.status,
+        institutionName: input.institutionName,
+        institutionNumber: input.institutionNumber,
+      }),
+    })
+    const now = new Date()
+    const transaction = this.getTransaction(DB_NAMES.MAIN)
+
+    const [row, created] = await this.model.findOrCreate({
+      where: { item_id: draft.getItemId(), investment_id: draft.getInvestmentId() },
+      defaults: toRow(draft, now),
+      ...(transaction ? { transaction } : {}),
+    })
+
+    if (created) {
+      return draft
+    }
+
+    await row.update(toRow(draft, now), transaction ? { transaction } : {})
+    return draft
+  }
+}
+
+function toRow(position: PluggyPosition, now: Date): PluggyPositionRow {
+  return {
+    item_id: position.getItemId(),
+    investment_id: position.getInvestmentId(),
+    type: position.getType(),
+    subtype: position.getSubtype() ?? null,
+    name: position.getName(),
+    code: position.getCode() ?? null,
+    isin: position.getIsin() ?? null,
+    currency_code: position.getCurrencyCode(),
+    balance: position.getBalance().toFixed(2),
+    quantity: position.getQuantity()?.toFixed(8) ?? null,
+    amount_original: position.getAmountOriginal()?.toFixed(2) ?? null,
+    value: position.getValue()?.toFixed(8) ?? null,
+    amount: position.getAmount()?.toFixed(2) ?? null,
+    taxes: position.getTaxes()?.toFixed(2) ?? null,
+    taxes2: position.getTaxes2()?.toFixed(2) ?? null,
+    status: position.getStatus() ?? null,
+    institution_name: position.getInstitutionName() ?? null,
+    institution_number: position.getInstitutionNumber() ?? null,
+    quota_date: position.getQuotaDate(),
+    created_at: now,
+    updated_at: now,
+  } as PluggyPositionRow
+}
+
+export function toEntity(row: PluggyPositionRow): PluggyPosition {
+  return PluggyPosition.reconstitute({
+    investmentId: row.investment_id,
+    itemId: row.item_id,
+    type: row.type,
+    name: row.name,
+    currencyCode: row.currency_code,
+    balance: new Decimal(row.balance),
+    quotaDate: row.quota_date,
+    ...withDefined({
+      subtype: row.subtype ?? undefined,
+      code: row.code ?? undefined,
+      isin: row.isin ?? undefined,
+      quantity: row.quantity !== null ? new Decimal(row.quantity) : undefined,
+      amountOriginal: row.amount_original !== null ? new Decimal(row.amount_original) : undefined,
+      value: row.value !== null ? new Decimal(row.value) : undefined,
+      amount: row.amount !== null ? new Decimal(row.amount) : undefined,
+      taxes: row.taxes !== null ? new Decimal(row.taxes) : undefined,
+      taxes2: row.taxes2 !== null ? new Decimal(row.taxes2) : undefined,
+      status: row.status ?? undefined,
+      institutionName: row.institution_name ?? undefined,
+      institutionNumber: row.institution_number ?? undefined,
+    }),
+  })
+}
+
+// exactOptionalPropertyTypes (tsconfig) proíbe atribuir `undefined` explicitamente a uma propriedade
+// opcional (`campo?: T`) — só permite a chave ausente. As entradas deste repositório (linha do banco,
+// input de sincronização) sempre têm a chave, com valor possivelmente `undefined`; este helper remove
+// as chaves `undefined` antes de repassar pra `PluggyPosition.create`/`reconstitute`, que declaram os
+// campos opcionais no padrão `campo?: T` (mesmo padrão de `pluggy-item.ts`).
+function withDefined<T extends object>(fields: T): { [K in keyof T]?: Exclude<T[K], undefined> } {
+  return Object.fromEntries(Object.entries(fields).filter(([, value]) => value !== undefined)) as {
+    [K in keyof T]?: Exclude<T[K], undefined>
+  }
+}

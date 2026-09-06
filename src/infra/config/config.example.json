@@ -1,0 +1,11 @@
+{
+  "http": {
+    "port": 3003,
+    "jwtSecret": "INFORME_AQUI_JWT_SECRET"
+  },
+  "pluggy": {
+    "webhookUrl": "https://pluggy-connector.example.com/webhooks/pluggy",
+    "itemId": "00000000-0000-0000-0000-000000000000",
+    "credentialEncryptionKey": "INFORME_AQUI_CHAVE_BASE64_32_BYTES"
+  }
+}

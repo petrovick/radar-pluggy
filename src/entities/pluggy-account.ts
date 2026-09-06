@@ -1,0 +1,252 @@
+import type { Decimal } from 'decimal.js'
+import { ApplicationError } from '../shared/application-error.js'
+
+const ALLOWED_CREATE_FIELDS = new Set([
+  'itemId',
+  'accountId',
+  'type',
+  'subtype',
+  'number',
+  'name',
+  'marketingName',
+  'balance',
+  'currencyCode',
+  'owner',
+  'providerCreatedAt',
+  'providerUpdatedAt',
+  'level',
+  'brand',
+  'brandAdditionalInfo',
+  'balanceCloseDate',
+  'balanceDueDate',
+  'availableCreditLimit',
+  'balanceForeignCurrency',
+  'minimumPayment',
+  'creditLimit',
+  'isLimitFlexible',
+  'status',
+  'holderType',
+])
+
+export interface CreatePluggyAccountProps {
+  itemId: string
+  accountId: string
+  type: string
+  subtype?: string | undefined
+  number: string
+  name: string
+  marketingName?: string | undefined
+  balance: Decimal
+  currencyCode: string
+  owner?: string | undefined
+  providerCreatedAt: Date
+  providerUpdatedAt: Date
+  // Campos de `CreditData` (SDK `pluggy-sdk`, `account.d.ts`), presentes só quando a conta é do tipo
+  // `CREDIT` e a Pluggy devolve `creditData` não nulo. `disaggregatedCreditLimits` fica de fora de
+  // propósito: é lista aninhada complexa, só devolvida por conector Open Finance — fora do escopo
+  // desta tarefa.
+  level?: string | undefined
+  brand?: string | undefined
+  brandAdditionalInfo?: string | undefined
+  balanceCloseDate?: Date | undefined
+  balanceDueDate?: Date | undefined
+  availableCreditLimit?: Decimal | undefined
+  balanceForeignCurrency?: Decimal | undefined
+  minimumPayment?: Decimal | undefined
+  creditLimit?: Decimal | undefined
+  isLimitFlexible?: boolean | undefined
+  status?: 'ACTIVE' | 'BLOCKED' | 'CANCELLED' | undefined
+  holderType?: 'MAIN' | 'ADDITIONAL' | undefined
+}
+
+export class PluggyAccount {
+  private readonly itemId: string
+  private readonly accountId: string
+  private readonly type: string
+  private readonly subtype: string | undefined
+  private readonly number: string
+  private readonly name: string
+  private readonly marketingName: string | undefined
+  private readonly balance: Decimal
+  private readonly currencyCode: string
+  private readonly owner: string | undefined
+  private readonly providerCreatedAt: Date
+  private readonly providerUpdatedAt: Date
+  private readonly level: string | undefined
+  private readonly brand: string | undefined
+  private readonly brandAdditionalInfo: string | undefined
+  private readonly balanceCloseDate: Date | undefined
+  private readonly balanceDueDate: Date | undefined
+  private readonly availableCreditLimit: Decimal | undefined
+  private readonly balanceForeignCurrency: Decimal | undefined
+  private readonly minimumPayment: Decimal | undefined
+  private readonly creditLimit: Decimal | undefined
+  private readonly isLimitFlexible: boolean | undefined
+  private readonly status: 'ACTIVE' | 'BLOCKED' | 'CANCELLED' | undefined
+  private readonly holderType: 'MAIN' | 'ADDITIONAL' | undefined
+
+  // Recebe `props` por nome, não por posição: com 12 campos de crédito opcionais — quatro `Decimal`
+  // e três `string` consecutivos —, um construtor posicional deixaria uma transposição entre dois
+  // parâmetros compilar sem erro e gravar dado financeiro trocado em silêncio.
+  private constructor(props: CreatePluggyAccountProps) {
+    this.itemId = props.itemId
+    this.accountId = props.accountId
+    this.type = props.type
+    this.subtype = props.subtype
+    this.number = props.number
+    this.name = props.name
+    this.marketingName = props.marketingName
+    this.balance = props.balance
+    this.currencyCode = props.currencyCode
+    this.owner = props.owner
+    this.providerCreatedAt = props.providerCreatedAt
+    this.providerUpdatedAt = props.providerUpdatedAt
+    this.level = props.level
+    this.brand = props.brand
+    this.brandAdditionalInfo = props.brandAdditionalInfo
+    this.balanceCloseDate = props.balanceCloseDate
+    this.balanceDueDate = props.balanceDueDate
+    this.availableCreditLimit = props.availableCreditLimit
+    this.balanceForeignCurrency = props.balanceForeignCurrency
+    this.minimumPayment = props.minimumPayment
+    this.creditLimit = props.creditLimit
+    this.isLimitFlexible = props.isLimitFlexible
+    this.status = props.status
+    this.holderType = props.holderType
+  }
+
+  static create(props: CreatePluggyAccountProps): PluggyAccount {
+    assertNoUnexpectedFields(props)
+    assertPresent(props.itemId, 'PLUGGY_ACCOUNT_ITEM_ID_MISSING')
+    assertPresent(props.accountId, 'PLUGGY_ACCOUNT_ACCOUNT_ID_MISSING')
+    assertPresent(props.type, 'PLUGGY_ACCOUNT_TYPE_MISSING')
+    assertPresent(props.number, 'PLUGGY_ACCOUNT_NUMBER_MISSING')
+    assertPresent(props.name, 'PLUGGY_ACCOUNT_NAME_MISSING')
+    assertPresent(props.currencyCode, 'PLUGGY_ACCOUNT_CURRENCY_CODE_MISSING')
+
+    if (props.balance === undefined || props.balance === null) {
+      throw new ApplicationError('PLUGGY_ACCOUNT_BALANCE_MISSING', { accountId: props.accountId })
+    }
+    if (props.providerCreatedAt === undefined || props.providerCreatedAt === null || Number.isNaN(props.providerCreatedAt.getTime())) {
+      throw new ApplicationError('PLUGGY_ACCOUNT_PROVIDER_CREATED_AT_MISSING', { accountId: props.accountId })
+    }
+    if (props.providerUpdatedAt === undefined || props.providerUpdatedAt === null || Number.isNaN(props.providerUpdatedAt.getTime())) {
+      throw new ApplicationError('PLUGGY_ACCOUNT_PROVIDER_UPDATED_AT_MISSING', { accountId: props.accountId })
+    }
+
+    return new PluggyAccount(props)
+  }
+
+  static reconstitute(props: CreatePluggyAccountProps): PluggyAccount {
+    return new PluggyAccount(props)
+  }
+
+  getItemId(): string {
+    return this.itemId
+  }
+
+  getAccountId(): string {
+    return this.accountId
+  }
+
+  getType(): string {
+    return this.type
+  }
+
+  getSubtype(): string | undefined {
+    return this.subtype
+  }
+
+  getNumber(): string {
+    return this.number
+  }
+
+  getName(): string {
+    return this.name
+  }
+
+  getMarketingName(): string | undefined {
+    return this.marketingName
+  }
+
+  getBalance(): Decimal {
+    return this.balance
+  }
+
+  getCurrencyCode(): string {
+    return this.currencyCode
+  }
+
+  getOwner(): string | undefined {
+    return this.owner
+  }
+
+  getProviderCreatedAt(): Date {
+    return this.providerCreatedAt
+  }
+
+  getProviderUpdatedAt(): Date {
+    return this.providerUpdatedAt
+  }
+
+  getLevel(): string | undefined {
+    return this.level
+  }
+
+  getBrand(): string | undefined {
+    return this.brand
+  }
+
+  getBrandAdditionalInfo(): string | undefined {
+    return this.brandAdditionalInfo
+  }
+
+  getBalanceCloseDate(): Date | undefined {
+    return this.balanceCloseDate
+  }
+
+  getBalanceDueDate(): Date | undefined {
+    return this.balanceDueDate
+  }
+
+  getAvailableCreditLimit(): Decimal | undefined {
+    return this.availableCreditLimit
+  }
+
+  getBalanceForeignCurrency(): Decimal | undefined {
+    return this.balanceForeignCurrency
+  }
+
+  getMinimumPayment(): Decimal | undefined {
+    return this.minimumPayment
+  }
+
+  getCreditLimit(): Decimal | undefined {
+    return this.creditLimit
+  }
+
+  getIsLimitFlexible(): boolean | undefined {
+    return this.isLimitFlexible
+  }
+
+  getStatus(): 'ACTIVE' | 'BLOCKED' | 'CANCELLED' | undefined {
+    return this.status
+  }
+
+  getHolderType(): 'MAIN' | 'ADDITIONAL' | undefined {
+    return this.holderType
+  }
+}
+
+function assertPresent(value: string | undefined, errorType: string): void {
+  if (!value || value.trim().length === 0) {
+    throw new ApplicationError(errorType)
+  }
+}
+
+function assertNoUnexpectedFields(props: object): void {
+  const forbidden = Object.keys(props).filter((key) => !ALLOWED_CREATE_FIELDS.has(key))
+  if (forbidden.length > 0) {
+    throw new ApplicationError('PLUGGY_ACCOUNT_UNEXPECTED_FIELD', { fields: forbidden })
+  }
+}

@@ -1,0 +1,20 @@
+networks:
+  shared-services:
+    external: true
+
+services:
+  radar-pluggy:
+    restart: always
+    build:
+      context: .
+      target: runtime
+    environment:
+      - NODE_ENV=development
+    volumes:
+      - ./src/infra/config/config.json:/application/src/infra/config/config.json:ro
+      - ./src/infra/config/databases.json:/application/src/infra/config/databases.json:ro
+    container_name: radar-pluggy
+    networks:
+      - shared-services
+    ports:
+      - '3003:3003'

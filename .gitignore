@@ -1,0 +1,44 @@
+# Dependências e compilação
+node_modules/
+dist/
+coverage/
+.eslintcache/
+
+# Ambientes e variáveis
+.env
+.env.*
+*.env
+
+# Configurações com credenciais locais reais (moldes versionados são *.example.json)
+src/infra/config/config.json
+src/infra/config/databases.json
+
+# Backups e arquivos temporários
+*.json.bak
+*.bak
+*.backup
+*.old
+*.swp
+*~
+.DS_Store
+
+# Logs e dumps
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+*.log
+*.dump
+*.sql
+
+# Chaves e certificados privados (preserva certificado CA público do Aiven)
+*.pem
+*.key
+*.crt
+!aiven-ca.pem
+
+# Artefatos de POC e depuração
+poc-*
+poc-results-erase-later/
+
+# Arquivos de lock e temporários de ferramentas
+.claude/*.lock

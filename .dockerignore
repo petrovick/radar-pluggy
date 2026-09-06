@@ -1,0 +1,25 @@
+.git
+.github
+.husky
+node_modules
+dist
+coverage
+.eslintcache
+.env
+.env.*
+*.env
+npm-debug.log*
+
+# Segredos locais e arquivos de configuração sensíveis — NUNCA entram na imagem Docker
+src/infra/config/config.json
+src/infra/config/databases.json
+*.json.bak
+*.backup
+*.old
+
+# Testes não entram na imagem de runtime nem build
+tests
+
+# Artefatos de POC e depuração
+poc-*
+poc-results-erase-later
