@@ -16,7 +16,7 @@
 
 ## 4. Pipeline de CI/CD
 
-- [x] 4.1 Criar `.github/workflows/deploy-staging.yml` com `permissions: contents: read, packages: write`: build da imagem (`Dockerfile`, estágio `runtime`) em push para `main`, login no GHCR (`GITHUB_TOKEN`), push com as tags `:staging` e `:sha-<hash-curto>`, `concurrency: group: deploy-staging` (evita corrida entre execuções), passo final `railway redeploy --service radar-pluggy --yes` autenticado por `RAILWAY_TOKEN` — verificar: sintaxe do YAML válida (lint/`actionlint`); execução real fica pra task 5.
+- [x] 4.1 Criar `.github/workflows/deploy-staging.yml` com `permissions: contents: read, packages: write`: build da imagem (`Dockerfile`, estágio `runtime`) em push para a branch `staging` (default do repositório — **corrigido depois**: nasceu apontando pra `main` por engano meu, branch que este repositório não usa; sem isso o workflow nunca disparava), login no GHCR (`GITHUB_TOKEN`), push com as tags `:staging` e `:sha-<hash-curto>`, `concurrency: group: deploy-staging` (evita corrida entre execuções), passo final `railway redeploy --service radar-pluggy --yes` autenticado por `RAILWAY_TOKEN` — verificar: sintaxe do YAML válida (lint/`actionlint`); execução real fica pra task 5.
 - [x] 4.2 Criar `.github/workflows/railway-config.yml`: job `plan` em `pull_request` (paths `.railway/**`) com `permissions: contents: read, pull-requests: write, actions: read` (comenta o plano no PR), job `apply` em merge na `main` com `permissions: contents: read, actions: read, pull-requests: read` (resolve qual PR mergeada gerou o plano), ambos usando a action `railwayapp/config@v1` com `RAILWAY_TOKEN` — verificar: sintaxe válida; o primeiro `plan` real roda no próprio PR deste change.
 
 ## 5. Primeiro deploy real e limpeza
