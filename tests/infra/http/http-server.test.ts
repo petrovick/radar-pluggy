@@ -6,7 +6,13 @@ import type { AppContainerInstance } from '../../../src/infra/bootstrap/register
 import type { RegisterPluggyCredentialOutput } from '../../../src/interactors/pluggy-credential/register/register-pluggy-credential.types.js'
 import type { CheckPluggyCredentialOutput } from '../../../src/interactors/pluggy-credential/check/check-pluggy-credential.types.js'
 import type { CheckHealthOutput } from '../../../src/interactors/health/check/check-health.types.js'
+import type { SyncPluggyPositionOutput } from '../../../src/interactors/pluggy-position/sync/sync-pluggy-position.types.js'
+import type { LoadPluggyHistoryOutput } from '../../../src/interactors/pluggy-history/load/load-pluggy-history.types.js'
 import { ApplicationError } from '../../../src/shared/application-error.js'
+
+function flushMicrotasks(): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, 0))
+}
 
 const SECRET = 'a-secret-with-at-least-32-characters!!'
 
@@ -43,6 +49,8 @@ describe('createHttpServer', () => {
     register?: () => Promise<RegisterPluggyCredentialOutput>
     checkHealth?: () => Promise<CheckHealthOutput>
     checkCredential?: () => Promise<CheckPluggyCredentialOutput>
+    syncPosition?: (input: unknown) => Promise<SyncPluggyPositionOutput>
+    loadHistory?: (input: unknown) => Promise<LoadPluggyHistoryOutput>
   }): AppContainerInstance {
     const registrations: Record<string, unknown> = {
       logger: { addContext: () => {}, info: () => {}, warn: () => {}, error: () => {} },
@@ -52,6 +60,16 @@ describe('createHttpServer', () => {
       },
       checkHealthInteractor: { execute: options.checkHealth ?? (async () => ({ data: { running: true } })) },
       checkPluggyCredentialInteractor: { execute: options.checkCredential ?? (async () => ({ data: {} })) },
+      // Pré-carregamento disparado em background pelo cadastro de credencial (POST /credentials) —
+      // ver `createRegisterPluggyCredentialHandler` + `load-pluggy-item-in-background.ts`.
+      syncPluggyPositionInteractor: {
+        execute: options.syncPosition ?? (async () => ({ data: { synced: true, positionsSynced: 0, loansSynced: 0 } })),
+      },
+      loadPluggyHistoryInteractor: {
+        execute:
+          options.loadHistory ??
+          (async () => ({ data: { loaded: true, sourcesScanned: 0, transactionsObserved: 0, sourcesRefused: [] } })),
+      },
     }
     const scope = {
       register: () => {},
@@ -125,6 +143,34 @@ describe('createHttpServer', () => {
 
     expect(response.status).toBe(201)
     expect(await response.json()).toEqual({ id: 9 })
+  })
+
+  it('POST /credentials com token válido dispara o pré-carregamento (posição + histórico) em background', async () => {
+    let syncCalled = false
+    let historyInput: unknown
+    const port = await listen(
+      fakeContainer({
+        syncPosition: async () => {
+          syncCalled = true
+          return { data: { synced: true, positionsSynced: 3, loansSynced: 0 } }
+        },
+        loadHistory: async (input: unknown) => {
+          historyInput = input
+          return { data: { loaded: true, sourcesScanned: 1, transactionsObserved: 5, sourcesRefused: [] } }
+        },
+      }),
+    )
+
+    const response = await fetch(`http://127.0.0.1:${port}/credentials`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', authorization: `Bearer ${validToken}` },
+      body: JSON.stringify({ clientId: 'client-1', clientSecret: 'segredo', itemId: 'item-1' }),
+    })
+    await flushMicrotasks()
+
+    expect(response.status).toBe(201)
+    expect(syncCalled).toBe(true)
+    expect(historyInput).toEqual({ origin: 'USER', personId: 1, itemId: 'item-1' })
   })
 
   it('POST /credentials sem itemId responde 400 nomeando o campo, via requisição HTTP real', async () => {

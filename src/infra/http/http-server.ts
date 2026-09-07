@@ -1,5 +1,5 @@
 import express, { type Express, type NextFunction, type Request, type Response } from 'express'
-import { registerPluggyCredentialHandler } from '../../adapters/handlers/register-pluggy-credential.handler.js'
+import { createRegisterPluggyCredentialHandler } from '../../adapters/handlers/register-pluggy-credential.handler.js'
 import { checkPluggyCredentialHandler } from '../../adapters/handlers/check-pluggy-credential.handler.js'
 import { readPluggyPositionHandler } from '../../adapters/handlers/read-pluggy-position.handler.js'
 import { readPluggyAccountHandler } from '../../adapters/handlers/read-pluggy-account.handler.js'
@@ -13,6 +13,7 @@ import { reconcilePluggyWebhookHandler } from '../../adapters/handlers/reconcile
 import { checkHealthHandler } from '../../adapters/handlers/health.handler.js'
 import { drainInBackground } from '../worker/webhook-drainer.js'
 import { syncPluggyPositionInBackground } from '../worker/sync-pluggy-position-in-background.js'
+import { loadPluggyItemInBackground } from '../worker/load-pluggy-item-in-background.js'
 
 export interface HttpServerDependencies {
   jwtSecret: string
@@ -37,7 +38,21 @@ export function createHttpServer(deps: HttpServerDependencies): Express {
   // `healthcheck`.
   app.get('/healthcheck', checkHealthHandler)
 
-  app.post('/credentials', authenticate, registerPluggyCredentialHandler)
+  // Cadastro de credencial: responde ao titular assim que salvo e provisionado, e dispara o
+  // pré-carregamento (posição + histórico) em background, em escopo próprio — nunca o da
+  // requisição (mesma forma do webhook, container raiz + callback injetado).
+  app.post(
+    '/credentials',
+    authenticate,
+    createRegisterPluggyCredentialHandler(deps.container, (container, personId, itemId) =>
+      loadPluggyItemInBackground(container, personId, itemId, (error) => {
+        container.resolve('logger').error('falha ao pré-carregar item após cadastro de credencial', {
+          err: error,
+          itemId,
+        })
+      }),
+    ),
+  )
 
   // Estado de configuração da credencial (expor-status-credencial-pluggy) — front consulta para
   // decidir visibilidade de menus que dependem de credencial já cadastrada.

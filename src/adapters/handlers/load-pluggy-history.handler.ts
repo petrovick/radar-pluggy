@@ -7,11 +7,12 @@ import type { ScopedRequest } from '../../infra/http/middleware/request-scope.mi
 // histórico e de posição. Não chama `PATCH /items` — a sincronização na Pluggy é dela
 // (fronteira-pluggy, regra 7); aqui só se lê o que ela já coletou.
 //
-// Existe porque nenhum dos dois roda sozinho no registro de credencial nem por cron: a única
-// sincronização automática é o webhook (`item/updated`, ciclo da Pluggy), que pode demorar ou nunca
-// chegar se o provisionamento do webhook falhar. Esta rota é o caminho manual equivalente ao que o
-// drenador de webhook já faz (`infra/worker/webhook-drainer.ts`), chamável quantas vezes quiser — o
-// portão de marca d'água de cada caso de uso torna a repetição barata quando nada mudou.
+// O registro de credencial já dispara os dois em background (`load-pluggy-item-in-background.ts`),
+// e o webhook (`item/updated`, ciclo da Pluggy) os dispara de novo a cada mudança — mas nenhum dos
+// dois é acionável pelo titular sob demanda, e o pré-carregamento do registro é best-effort (falha
+// não é reportada). Esta rota é o caminho manual, equivalente ao que o drenador de webhook já faz
+// (`infra/worker/webhook-drainer.ts`), chamável quantas vezes quiser — o portão de marca d'água de
+// cada caso de uso torna a repetição barata quando nada mudou.
 //
 // A resposta espera só o histórico. `LoadPluggyHistoryInteractor` checa dono (`assertItemAccess`)
 // antes de qualquer I/O — é o que prova que `itemId` pertence a `personId`. A sincronização de
