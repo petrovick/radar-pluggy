@@ -47,3 +47,19 @@ no `GET /items/{id}` que a observação já faz.
   mesmo item traz um `connector` com `name`, `imageUrl` ou `primaryColor` diferentes dos já
   persistidos
 - **THEN** a identidade do connector do vínculo é atualizada para refletir o payload mais recente
+
+### Requirement: Produtos suportados pelo connector são capturados junto da identidade
+O connector traz, no mesmo payload já usado para `connectorId`/`connectorName`, a lista de produtos
+que a instituição suporta (`Connector.products`). Essa lista MUST ser capturada e persistida junto
+do vínculo, nos mesmos pontos em que a identidade do connector é capturada/atualizada (cadastro e
+observação subsequente aceita) — nunca inferida do que já foi observado em `statusDetail`.
+
+#### Scenario: Cadastro persiste os produtos suportados
+- **WHEN** um vínculo entre credencial e item é criado e o `connector` do payload traz uma lista de
+  produtos suportados
+- **THEN** essa lista é persistida junto do vínculo, na mesma operação que cria o vínculo
+
+#### Scenario: Produtos suportados não são inferidos do que já foi coletado
+- **WHEN** os produtos suportados por um connector precisam ser conhecidos
+- **THEN** eles vêm exclusivamente de `Connector.products` capturado do payload, nunca de quais
+  fontes já apareceram em alguma observação anterior

@@ -2,21 +2,23 @@
 
 Registrar, por item, por **consumidor** (o pipeline que processa a fonte: `POSITION_SYNC` ou
 `HISTORY_LOAD`) e por fonte real de dados da Pluggy (`ACCOUNTS`, `ACCOUNT_TRANSACTIONS`,
-`INVESTMENTS`, `INVESTMENT_TRANSACTIONS`, `LOANS` — cada uma com seu próprio `lastUpdatedAt` em
-`Item.statusDetail`), até que versão dos dados daquela fonte específica **aquele consumidor** já
-processou com sucesso — para que uma fonte recusada por limite operacional seja retentada assim que
-ela própria avançar, sem depender do item inteiro mudar de novo, sem uma fonte saudável esperar por
-outra que está travada, e sem um consumidor emprestar progresso a outro que nunca rodou sobre aquela
-fonte. `CASH` (`ACCOUNTS`, `ACCOUNT_TRANSACTIONS`) e `CUSTODY` (`INVESTMENTS`,
-`INVESTMENT_TRANSACTIONS`) são agrupamentos de negócio usados pela carga de histórico para decidir
-elegibilidade — nenhum dos dois tem marca d'água própria, cada um é a união das marcas d'água das
-fontes que o compõem, sempre no consumidor `HISTORY_LOAD`.
+`INVESTMENTS`, `INVESTMENT_TRANSACTIONS`, `LOANS`), até que versão da execução daquela fonte
+específica **aquele consumidor** já processou com sucesso — para que uma fonte recusada por limite
+operacional seja retentada assim que ela própria avançar, sem depender do item inteiro mudar de
+novo, sem uma fonte saudável esperar por outra que está travada, e sem um consumidor emprestar
+progresso a outro que nunca rodou sobre aquela fonte. `CASH` (`ACCOUNTS`, `ACCOUNT_TRANSACTIONS`) e
+`CUSTODY` (`INVESTMENTS`, `INVESTMENT_TRANSACTIONS`) são agrupamentos de negócio usados pela carga de
+histórico para decidir elegibilidade — nenhum dos dois tem marca d'água própria, cada um é a união
+das marcas d'água das fontes que o compõem, sempre no consumidor `HISTORY_LOAD`.
 
-A marca d'água não representa "qual versão desta fonte existe" — representa "até qual versão desta
-fonte este consumidor processou com sucesso". `INVESTMENTS` é a única fonte usada por dois
-consumidores (`POSITION_SYNC`, para posição; `HISTORY_LOAD`, para descobrir investimentos a escanear
-na carga de custódia) — cada um mantém sua própria marca d'água para `INVESTMENTS`, porque cada um
-processa algo diferente a partir do mesmo recurso; um avançar nunca avança o do outro.
+A marca d'água não representa "qual versão desta fonte existe" — representa "até qual versão da
+execução este consumidor processou com sucesso para esta fonte". Essa versão nem sempre vem de um
+`lastUpdatedAt` por fonte: `Item.statusDetail` só existe quando `executionStatus` é
+`PARTIAL_SUCCESS` — em `SUCCESS`, é `null`, e a versão gravada é `Item.lastUpdatedAt` (ver
+Requirement abaixo). `INVESTMENTS` é a única fonte usada por dois consumidores (`POSITION_SYNC`,
+para posição; `HISTORY_LOAD`, para descobrir investimentos a escanear na carga de custódia) — cada
+um mantém sua própria marca d'água para `INVESTMENTS`, porque cada um processa algo diferente a
+partir do mesmo recurso; um avançar nunca avança o do outro.
 
 ## ADDED Requirements
 
@@ -56,3 +58,27 @@ primeira tentativa, mesmo que outro consumidor já tenha processado a mesma font
 - **WHEN** não existe nenhuma marca d'água registrada para um (`itemId`, `consumer`, `source`)
 - **THEN** essa combinação é considerada elegível para processamento, independente de qualquer outro
   sinal de mudança e independente de outro consumidor já ter marca d'água para a mesma fonte
+
+### Requirement: Versão gravada depende de executionStatus — nunca assume statusDetail sempre presente
+`Item.statusDetail` só existe quando `executionStatus` é `PARTIAL_SUCCESS` — em `SUCCESS`, é `null`.
+A versão de execução gravada para uma fonte é `Item.lastUpdatedAt` quando `executionStatus` é
+`SUCCESS`; é `statusDetail.<fonte>.lastUpdatedAt` quando `executionStatus` é `PARTIAL_SUCCESS` **e**
+a fonte tem `isUpdated === true`. Uma fonte com `isUpdated` diferente de `true` em `PARTIAL_SUCCESS`
+nunca tem sua marca d'água avançada nesta execução, mesmo que `statusDetail` traga um
+`lastUpdatedAt` de uma coleta anterior.
+
+#### Scenario: SUCCESS grava a versão do Item, não um valor por fonte
+- **WHEN** uma execução termina com `executionStatus === 'SUCCESS'` (`statusDetail` é `null`) e uma
+  fonte suportada é processada com sucesso
+- **THEN** a marca d'água daquela fonte é gravada com `Item.lastUpdatedAt`
+
+#### Scenario: PARTIAL_SUCCESS grava a versão por fonte, só quando utilizável
+- **WHEN** uma execução termina com `executionStatus === 'PARTIAL_SUCCESS'` e uma fonte tem
+  `statusDetail.<fonte>.isUpdated === true`
+- **THEN** a marca d'água daquela fonte é gravada com `statusDetail.<fonte>.lastUpdatedAt`
+
+#### Scenario: Fonte não coletada não avança, mesmo com lastUpdatedAt antigo presente
+- **WHEN** uma execução termina com `executionStatus === 'PARTIAL_SUCCESS'` e uma fonte tem
+  `isUpdated` diferente de `true`, com `statusDetail.<fonte>.lastUpdatedAt` apontando para uma
+  coleta anterior
+- **THEN** a marca d'água daquela fonte não é gravada nesta execução

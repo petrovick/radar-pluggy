@@ -86,6 +86,25 @@ O par (`status`, `executionStatus`) do item é traduzido para exatamente um entr
 - **WHEN** o item observado tem `status` `OUTDATED`
 - **THEN** o estado de conexão traduzido é `STALE`
 
+### Requirement: Aceitar a observação e atualizar o connector do vínculo são a mesma decisão atômica
+Quando uma observação de Item é aceita (pelo critério de ordenação de `observationStartedAt` acima) e
+o payload traz `connector`, a identidade do connector do vínculo credencial↔item é atualizada na
+mesma escrita que aceita a observação — nunca em uma escrita separada. Uma observação recusada
+(porque chegou atrasada) nunca atualiza o connector, mesmo que o `connector` do payload recusado seja
+diferente do já persistido — o payload de uma leitura mais antiga não é uma fonte confiável de
+metadata mais nova.
+
+#### Scenario: Observação aceita atualiza o connector na mesma escrita
+- **WHEN** uma observação é aceita e o payload traz um `connector` diferente do já persistido no
+  vínculo
+- **THEN** a identidade do connector do vínculo é atualizada, na mesma operação que aceita a
+  observação
+
+#### Scenario: Observação recusada não atualiza o connector
+- **WHEN** uma observação é recusada por ter `observationStartedAt` menor ou igual ao já registrado
+- **THEN** a identidade do connector do vínculo permanece a que já estava persistida, mesmo que o
+  payload recusado trouxesse um `connector` diferente
+
 ### Requirement: Item nunca observado responde estado desconhecido, nunca vazio silencioso
 Quando um item está vinculado a uma credencial mas ainda não existe nenhuma observação registrada
 para ele, o estado de conexão traduzido é `UNKNOWN` — nunca omitido e nunca tratado como `CONNECTED`.

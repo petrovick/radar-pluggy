@@ -2,14 +2,15 @@
 
 ### Requirement: Sincronização só ocorre quando o portão de marca d'água do item libera
 Antes de buscar investimentos ou empréstimos, o serviço lê o estado fresco do item
-(`executionStatus`, `lastUpdatedAt`, estado por produto). A busca de cada produto (`investments`,
+(`executionStatus`, `lastUpdatedAt`, estado por fonte). A busca de cada fonte (`investments`,
 `loans`) só acontece quando `executionStatus` é `SUCCESS` ou `PARTIAL_SUCCESS` **e** a marca d'água
-daquele produto especificamente está desatualizada em relação ao que a Pluggy reporta para ele. Um
-produto recusado numa execução não impede o outro de ser processado.
+daquela fonte especificamente está desatualizada em relação à versão da execução disponível para ela
+(`Item.lastUpdatedAt` em `SUCCESS`; `statusDetail.<fonte>.lastUpdatedAt` em `PARTIAL_SUCCESS`, só
+quando `isUpdated === true`). Uma fonte recusada numa execução não impede a outra de ser processada.
 
 #### Scenario: Item sem mudança não gera nenhuma chamada de investimentos
-- **WHEN** a marca d'água de `investments` e a de `loans` já estão em dia com o que a Pluggy reporta
-  para o item
+- **WHEN** a marca d'água de `investments` e a de `loans` já estão em dia com a versão de execução
+  disponível para o item
 - **THEN** nenhuma chamada a `GET /investments` nem a `GET /loans` acontece, e a sincronização
   termina sem erro
 
@@ -17,36 +18,53 @@ produto recusado numa execução não impede o outro de ser processado.
 - **WHEN** o item fresco vem com `executionStatus` diferente de `SUCCESS` e de `PARTIAL_SUCCESS`
 - **THEN** nenhuma chamada a `GET /investments` nem a `GET /loans` acontece
 
-#### Scenario: Um produto recusado não impede o outro
-- **WHEN** o item vem em `PARTIAL_SUCCESS` com `investments` não coletado nesta execução e `loans`
-  coletado
+#### Scenario: Uma fonte recusada não impede a outra
+- **WHEN** o item vem em `PARTIAL_SUCCESS` com `investments` não coletado nesta execução (`isUpdated`
+  diferente de `true`) e `loans` coletado (`isUpdated === true`)
 - **THEN** `GET /loans` é chamado e a fotografia de empréstimos é atualizada; `GET /investments` não
   é chamado nesta execução
 
-### Requirement: Lista de investimentos vazia com portão aberto é recusa nomeada
-Quando o portão de marca d'água do produto `investments` libera a sincronização **e o produto foi de
-fato tentado** mas a Pluggy devolve uma lista vazia de investimentos para o item, isso é tratado
-como estado de reconexão — nunca como "portfólio ficou vazio". Nenhuma posição existente é apagada
-ou sobrescrita nesse caso. Quando `investments` não foi tentado por estar recusado nesta execução,
-esta regra não se aplica — não há lista vazia a avaliar.
+### Requirement: Leitura autoritativa reconcilia a fotografia atual, inclusive quando devolve lista vazia
+Quando o portão de marca d'água de `investments` (ou de `loans`) libera a sincronização e a fonte é
+utilizável nesta execução (`isUpdated === true` em `PARTIAL_SUCCESS`, ou qualquer execução `SUCCESS`),
+a resposta da Pluggy é autoritativa — inclusive quando devolve lista vazia. Uma lista vazia
+autoritativa nunca é recusa nomeada: é reconciliada como "portfólio/dívida vazia" e a fotografia
+local passa a refletir isso — todo registro local daquele Item, na fonte correspondente, cujo
+identificador não veio na leitura, deixa de pertencer à fotografia atual. Snapshot e raw history não
+são afetados — continuam auditoria append-only. Quando `investments` (ou `loans`) não foi tentado
+por estar recusado nesta execução, nenhuma reconciliação ocorre e a fotografia existente permanece
+intocada.
 
-#### Scenario: Lista vazia recusa nomeando o item, sem apagar posição existente
-- **WHEN** o portão de `investments` libera a sincronização e `GET /investments` devolve uma lista
-  vazia para o item
-- **THEN** a sincronização é recusada nomeando o item, e nenhuma fotografia de posição existente é
-  alterada
+#### Scenario: Lista vazia autoritativa reconcilia como portfólio vazio
+- **WHEN** o portão de `investments` libera a sincronização, a fonte é utilizável nesta execução, e
+  `GET /investments` devolve uma lista vazia para o item
+- **THEN** toda posição local existente daquele item é removida da fotografia atual, e a
+  sincronização termina sem erro
 
-#### Scenario: Produto recusado não é tratado como lista vazia
+#### Scenario: Investimento que sumiu da leitura deixa de pertencer à fotografia atual
+- **WHEN** uma leitura autoritativa de `investments` traz um subconjunto dos investimentos que a
+  fotografia local já tinha para aquele item
+- **THEN** os investimentos ausentes da leitura atual deixam de pertencer à fotografia atual
+  (removidos ou marcados como não-corrente), e os presentes são atualizados normalmente
+
+#### Scenario: Fonte recusada não reconcilia nem apaga dado existente
 - **WHEN** `investments` está recusado nesta execução por não ter sido coletado pela Pluggy
-- **THEN** `GET /investments` nunca é chamado, e a ausência de dado novo não é tratada como lista
-  vazia nem recusa a sincronização
+  (`isUpdated` diferente de `true` em `PARTIAL_SUCCESS`)
+- **THEN** `GET /investments` nunca é chamado, nenhuma reconciliação ocorre, e a fotografia de
+  posição existente permanece intocada
+
+#### Scenario: Primeira carga com lista vazia não é erro
+- **WHEN** um item nunca teve fotografia de investimentos e a primeira leitura autoritativa devolve
+  lista vazia
+- **THEN** a sincronização termina sem erro, com a fotografia local permanecendo vazia para aquele
+  item
 
 ## ADDED Requirements
 
 ### Requirement: Marca d'água de ingestão completa avança só em sucesso pleno
 A marca d'água que representa "última ingestão completa e bem-sucedida do item" avança se e somente
 se `executionStatus` for `SUCCESS`. Ela nunca avança quando `executionStatus` é `PARTIAL_SUCCESS`,
-mesmo que um ou mais produtos tenham sido processados com sucesso nessa execução.
+mesmo que uma ou mais fontes tenham sido processadas com sucesso nessa execução.
 
 #### Scenario: Execução parcial não avança a marca d'água de ingestão completa
 - **WHEN** uma sincronização processa `loans` com sucesso, mas o item veio em `PARTIAL_SUCCESS`

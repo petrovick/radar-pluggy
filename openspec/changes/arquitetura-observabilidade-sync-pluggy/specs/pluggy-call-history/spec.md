@@ -1,9 +1,9 @@
 ## Purpose
 
 Manter um histórico append-only de toda chamada que este serviço faz à Pluggy — autenticação,
-leitura de snapshot, configuração de plataforma — com classificação, origem e resultado, para
-auditoria, análise de frequência e detecção de anomalia. Nunca funciona como estado de quota,
-lock ou lease.
+leitura de snapshot, configuração de plataforma (incluindo o provisionamento de webhook, hoje fora
+de qualquer instrumentação) — com classificação, origem e resultado, para auditoria, análise de
+frequência e detecção de anomalia. Nunca funciona como estado de quota, lock ou lease.
 
 ## ADDED Requirements
 
@@ -67,6 +67,24 @@ Todo registro tem um escopo de chamada entre: `AUTH`, `SNAPSHOT_READ`, `PLATFORM
 - **WHEN** uma chamada não corresponde a nenhuma classificação conhecida
 - **THEN** o registro é gravado com escopo `UNKNOWN`, nunca fica sem escopo
 
+#### Scenario: Provisionamento de webhook é classificado como PLATFORM_CONFIG
+- **WHEN** este serviço chama `fetchWebhook`, `createWebhook` ou `updateWebhook` (provisionamento de
+  webhook de credencial)
+- **THEN** um registro é gravado com escopo `PLATFORM_CONFIG`, `item_id` nulo e `connector_id` nulo
+  (configuração é por credencial/cliente, não por item)
+
+### Requirement: Origem da chamada (trigger) é classificada por um vocabulário fechado
+Todo registro tem um `trigger` entre: `CREDENTIAL_REGISTRATION_VALIDATION`,
+`CREDENTIAL_REGISTRATION_PROVISIONING`, `CREDENTIAL_REGISTRATION_PRELOAD`, `WEBHOOK`,
+`WEBHOOK_RECONCILIATION`, `BOOT_RECOVERY`, `MANUAL_HISTORY_LOAD`, `USER_REFRESH`,
+`REAL_TIME_BALANCE`, `SYSTEM_INTERNAL`. `SYSTEM_INTERNAL` é o fallback — nenhum registro fica sem
+`trigger`.
+
+#### Scenario: Provisionamento de webhook no cadastro é distinguido da validação
+- **WHEN** o cadastro de uma credencial nova provisiona o webhook, depois de validar o acesso ao item
+- **THEN** a validação gera um registro com `trigger = CREDENTIAL_REGISTRATION_VALIDATION` e o
+  provisionamento gera um registro separado com `trigger = CREDENTIAL_REGISTRATION_PROVISIONING`
+
 ### Requirement: Falha ao registrar uma chamada nunca impede a chamada de negócio
 Uma falha ao gravar o histórico de chamadas nunca impede, atrasa de forma bloqueante, nem reverte a
 chamada de negócio que a originou. A falha em si é sempre observável — nunca engolida em silêncio.
@@ -75,6 +93,28 @@ chamada de negócio que a originou. A falha em si é sempre observável — nunc
 - **WHEN** a gravação de um registro de chamada falha
 - **THEN** a chamada de negócio que a originou continua seu fluxo normalmente, e a falha de
   gravação é registrada como aviso de log ou métrica, nomeando o erro
+
+### Requirement: Persistência do registro nunca é aguardada antes de devolver o resultado da chamada real
+Depois que a chamada real ao SDK termina — com sucesso ou com falha —, o resultado dessa chamada é
+devolvido a quem chamou (ou a exceção original é relançada) sem esperar a tentativa de persistência
+do registro concluir. Isto vale mesmo quando a gravação teria sucesso e for rápida: o caminho de
+negócio nunca fica atrás da escrita de auditoria, nunca só quando ela falha.
+
+#### Scenario: Resultado da chamada real não espera a gravação de auditoria
+- **WHEN** uma chamada ao SDK da Pluggy termina
+- **THEN** o resultado (ou erro) dessa chamada é devolvido a quem a originou antes de, ou
+  independente de, a tentativa de gravação em `radar_pluggy_calls` ter concluído
+
+### Requirement: Registro nunca guarda corpo de requisição/resposta, segredo ou cursor opaco
+Um registro de chamada nunca contém corpo de requisição ou resposta, saldo, valor monetário,
+descrição de transação, segredo de cliente, chave de API, token de acesso, nem cursor de paginação
+opaco da Pluggy. Paginação é reconstruível pelo `request_correlation_id` e, quando necessário, um
+ordinal seguro (número de página) — nunca por um cursor opaco persistido.
+
+#### Scenario: Registro de uma chamada paginada não guarda o cursor da Pluggy
+- **WHEN** uma chamada paginada à Pluggy é registrada
+- **THEN** o registro identifica a página por um ordinal seguro e pelo `request_correlation_id`,
+  nunca por um cursor opaco devolvido pela Pluggy
 
 ### Requirement: Registro nunca funciona como mecanismo de concorrência
 O histórico de chamadas nunca é lido nem escrito como parte de uma decisão de exclusividade,
