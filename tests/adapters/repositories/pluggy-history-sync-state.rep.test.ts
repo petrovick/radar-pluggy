@@ -18,7 +18,7 @@ describe('PluggyHistorySyncStateRep', () => {
   beforeAll(async () => {
     const queryInterface = sequelize.getQueryInterface()
     const tables = await queryInterface.showAllTables()
-    if (!tables.includes('pluggy_connector_history_sync_states')) {
+    if (!tables.includes('radar_pluggy_history_sync_states')) {
       const { createRequire } = await import('node:module')
       const require = createRequire(import.meta.url)
       const { Sequelize } = await import('sequelize')

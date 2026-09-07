@@ -41,7 +41,7 @@ export class PluggyCredential {
   }
 
   // Reconstrói a partir de uma linha já persistida (fronteira model → entity do repositório). `id` vem
-  // do autoincrement — é o que `pluggy_connector_credential_items.credential_id` referencia (design.md D5,
+  // do autoincrement — é o que `radar_pluggy_credential_items.credential_id` referencia (design.md D5,
   // configuracao-credenciais-pluggy), então só existe depois que a credencial já foi salva.
   static reconstitute(props: {
     id: number

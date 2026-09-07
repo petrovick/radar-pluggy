@@ -23,7 +23,7 @@ export function definePluggyInvestmentTransactionRawModel(sequelize: Sequelize) 
       captured_at: { type: DataTypes.DATE(3), allowNull: false },
     },
     {
-      tableName: 'pluggy_connector_investment_transaction_raw',
+      tableName: 'radar_pluggy_investment_transaction_raw',
       timestamps: false,
     },
   )

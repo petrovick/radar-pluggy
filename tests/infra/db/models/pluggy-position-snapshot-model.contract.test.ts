@@ -26,13 +26,13 @@ function createProxyQueryInterface(qi: QueryInterface, targetName: string, subst
   })
 }
 
-describe('contrato: model factory de pluggy_connector_position_snapshots vs. migration real', () => {
+describe('contrato: model factory de radar_pluggy_position_snapshots vs. migration real', () => {
   const sequelize = createDatabaseConnection(testDatabaseConfig())
   const queryInterface = sequelize.getQueryInterface()
 
   beforeAll(async () => {
     const tables = await queryInterface.showAllTables()
-    if (!tables.includes('pluggy_connector_position_snapshots')) {
+    if (!tables.includes('radar_pluggy_position_snapshots')) {
       await migration.up(queryInterface, Sequelize)
     }
   })
@@ -42,14 +42,14 @@ describe('contrato: model factory de pluggy_connector_position_snapshots vs. mig
   })
 
   it('toda coluna da migration real tem uma coluna correspondente no model, e vice-versa', async () => {
-    const realColumns = await queryInterface.describeTable('pluggy_connector_position_snapshots')
+    const realColumns = await queryInterface.describeTable('radar_pluggy_position_snapshots')
     const model = definePluggyPositionSnapshotModel(sequelize)
 
     expect(Object.keys(model.getAttributes()).sort()).toEqual(Object.keys(realColumns).sort())
   })
 
   it('allowNull do model bate com o allowNull real de cada coluna', async () => {
-    const realColumns = await queryInterface.describeTable('pluggy_connector_position_snapshots')
+    const realColumns = await queryInterface.describeTable('radar_pluggy_position_snapshots')
     const model = definePluggyPositionSnapshotModel(sequelize)
     const attributes: Record<string, { allowNull?: boolean } | undefined> = model.getAttributes()
 

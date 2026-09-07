@@ -22,7 +22,7 @@ export function definePluggyCredentialItemModel(sequelize: Sequelize) {
       updated_at: { type: DataTypes.DATE(3), allowNull: false },
     },
     {
-      tableName: 'pluggy_connector_credential_items',
+      tableName: 'radar_pluggy_credential_items',
       timestamps: false,
     },
   )

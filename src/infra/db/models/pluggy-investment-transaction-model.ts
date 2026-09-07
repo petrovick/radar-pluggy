@@ -73,7 +73,7 @@ export function definePluggyInvestmentTransactionModel(sequelize: Sequelize) {
       updated_at: { type: DataTypes.DATE(3), allowNull: false },
     },
     {
-      tableName: 'pluggy_connector_investment_transactions',
+      tableName: 'radar_pluggy_investment_transactions',
       timestamps: false,
     },
   )

@@ -19,7 +19,7 @@ export function definePluggyHistorySyncStateModel(sequelize: Sequelize) {
       updated_at: { type: DataTypes.DATE(3), allowNull: false },
     },
     {
-      tableName: 'pluggy_connector_history_sync_states',
+      tableName: 'radar_pluggy_history_sync_states',
       timestamps: false,
     },
   )

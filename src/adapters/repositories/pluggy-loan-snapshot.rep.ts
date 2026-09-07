@@ -29,7 +29,7 @@ export class PluggyLoanSnapshotRep {
   }
 
   // Upsert por (item_id, loan_id, synced_at) sobre a constraint
-  // uq_pluggy_connector_loan_snapshots_item_loan_synced — uma linha por sincronização (não existe
+  // uq_radar_pluggy_loan_snapshots_item_loan_synced — uma linha por sincronização (não existe
   // data de cotação do provedor para agrupar por dia como em posição).
   async save(input: SavePluggyLoanSnapshotInput): Promise<PluggyLoanSnapshot> {
     const draft = PluggyLoanSnapshot.create({

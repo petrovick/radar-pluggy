@@ -133,10 +133,10 @@ pela fronteira numérica da regra 1.
 
 ## 13. Migration deste repositório só toca tabela que ele é dono
 
-Este serviço migra e é dono de `pluggy_connector_items`, `pluggy_connector_credentials`,
-`pluggy_connector_credential_items` e `pluggy_connector_positions` (mais as tabelas de posição, conta,
-histórico e inbox de webhook criadas depois, todas com o mesmo prefixo)
-(e, após o corte do webhook, `pluggy_webhooks`) — nome físico sempre com o prefixo `pluggy_connector_`;
+Este serviço migra e é dono de `radar_pluggy_items`, `radar_pluggy_credentials`,
+`radar_pluggy_credential_items` e `radar_pluggy_positions` (mais as tabelas de posição, conta,
+histórico, log bruto de auditoria e inbox de webhook criadas depois, todas com o mesmo prefixo)
+— nome físico sempre com o prefixo `radar_pluggy_`;
 entity e model TypeScript continuam sem ele (`modelagem-de-dados`). `people` e
 `custody_accounts` — e qualquer outra tabela do banco
 `oplab_radar` que já existia antes deste serviço — são **somente leitura**: sem migration, sem `ALTER

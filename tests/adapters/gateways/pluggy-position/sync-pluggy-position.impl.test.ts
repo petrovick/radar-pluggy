@@ -45,7 +45,7 @@ describe('SyncPluggyPositionImpl.savePositionsWithSnapshots', () => {
 
   beforeAll(async () => {
     const queryInterface = sequelize.getQueryInterface()
-    const cols = await queryInterface.describeTable('pluggy_connector_positions')
+    const cols = await queryInterface.describeTable('radar_pluggy_positions')
     if (!cols.due_date) {
       const { createRequire } = await import('node:module')
       const require = createRequire(import.meta.url)
@@ -56,7 +56,7 @@ describe('SyncPluggyPositionImpl.savePositionsWithSnapshots', () => {
       await migration.up(queryInterface, Sequelize)
     }
     const tables = await queryInterface.showAllTables()
-    if (!tables.includes('pluggy_connector_position_raw')) {
+    if (!tables.includes('radar_pluggy_position_raw')) {
       const { createRequire } = await import('node:module')
       const require = createRequire(import.meta.url)
       const { Sequelize } = await import('sequelize')
@@ -213,19 +213,19 @@ describe('SyncPluggyPositionImpl.saveLoansWithSnapshots', () => {
     const { Sequelize } = await import('sequelize')
 
     const tables = await queryInterface.showAllTables()
-    if (!tables.includes('pluggy_connector_loans')) {
+    if (!tables.includes('radar_pluggy_loans')) {
       const migration = require('../../../../src/infra/db/migrations/20260905100000-criar-pluggy-connector-loans.cjs') as {
         up: (queryInterface: unknown, sequelizeLib: typeof Sequelize) => Promise<void>
       }
       await migration.up(queryInterface, Sequelize)
     }
-    if (!tables.includes('pluggy_connector_loan_snapshots')) {
+    if (!tables.includes('radar_pluggy_loan_snapshots')) {
       const migration = require('../../../../src/infra/db/migrations/20260905100100-criar-pluggy-connector-loan-snapshots.cjs') as {
         up: (queryInterface: unknown, sequelizeLib: typeof Sequelize) => Promise<void>
       }
       await migration.up(queryInterface, Sequelize)
     }
-    if (!tables.includes('pluggy_connector_loan_raw')) {
+    if (!tables.includes('radar_pluggy_loan_raw')) {
       const migration = require('../../../../src/infra/db/migrations/20260906181600-criar-pluggy-connector-loan-raw.cjs') as {
         up: (queryInterface: unknown, sequelizeLib: typeof Sequelize) => Promise<void>
       }
@@ -355,7 +355,7 @@ describe('SyncPluggyPositionImpl.saveConsentStatus', () => {
 
   beforeAll(async () => {
     const queryInterface = sequelize.getQueryInterface()
-    const cols = await queryInterface.describeTable('pluggy_connector_consents')
+    const cols = await queryInterface.describeTable('radar_pluggy_consents')
     if (!cols.products) {
       const { createRequire } = await import('node:module')
       const require = createRequire(import.meta.url)
@@ -366,7 +366,7 @@ describe('SyncPluggyPositionImpl.saveConsentStatus', () => {
       await migration.up(queryInterface, Sequelize)
     }
     const tables = await queryInterface.showAllTables()
-    if (!tables.includes('pluggy_connector_consent_raw')) {
+    if (!tables.includes('radar_pluggy_consent_raw')) {
       const { createRequire } = await import('node:module')
       const require = createRequire(import.meta.url)
       const { Sequelize } = await import('sequelize')
@@ -473,7 +473,7 @@ describe('SyncPluggyPositionImpl.saveSyncedItemState', () => {
   beforeAll(async () => {
     const queryInterface = sequelize.getQueryInterface()
     const tables = await queryInterface.showAllTables()
-    if (!tables.includes('pluggy_connector_item_raw')) {
+    if (!tables.includes('radar_pluggy_item_raw')) {
       const { createRequire } = await import('node:module')
       const require = createRequire(import.meta.url)
       const { Sequelize } = await import('sequelize')

@@ -20,7 +20,7 @@ export function definePluggyItemRawModel(sequelize: Sequelize) {
       captured_at: { type: DataTypes.DATE(3), allowNull: false },
     },
     {
-      tableName: 'pluggy_connector_item_raw',
+      tableName: 'radar_pluggy_item_raw',
       timestamps: false,
     },
   )

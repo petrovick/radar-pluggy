@@ -40,7 +40,7 @@ describe('LoadPluggyHistoryImpl.scanSource', () => {
   beforeAll(async () => {
     const queryInterface = sequelize.getQueryInterface()
     const tables = await queryInterface.showAllTables()
-    if (!tables.includes('pluggy_connector_account_transaction_raw')) {
+    if (!tables.includes('radar_pluggy_account_transaction_raw')) {
       const { createRequire } = await import('node:module')
       const require = createRequire(import.meta.url)
       const { Sequelize } = await import('sequelize')
@@ -215,7 +215,7 @@ describe('LoadPluggyHistoryImpl.scanSource — transação de investimento', () 
   beforeAll(async () => {
     const queryInterface = sequelize.getQueryInterface()
     const tables = await queryInterface.showAllTables()
-    if (!tables.includes('pluggy_connector_investment_transaction_raw')) {
+    if (!tables.includes('radar_pluggy_investment_transaction_raw')) {
       const { createRequire } = await import('node:module')
       const require = createRequire(import.meta.url)
       const { Sequelize } = await import('sequelize')
@@ -377,7 +377,7 @@ describe('LoadPluggyHistoryImpl.readCashSources', () => {
   beforeAll(async () => {
     const queryInterface = sequelize.getQueryInterface()
     const tables = await queryInterface.showAllTables()
-    if (!tables.includes('pluggy_connector_account_raw')) {
+    if (!tables.includes('radar_pluggy_account_raw')) {
       const { createRequire } = await import('node:module')
       const require = createRequire(import.meta.url)
       const { Sequelize } = await import('sequelize')
