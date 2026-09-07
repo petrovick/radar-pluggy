@@ -21,7 +21,7 @@ export function definePluggyAccountRawModel(sequelize: Sequelize) {
       captured_at: { type: DataTypes.DATE(3), allowNull: false },
     },
     {
-      tableName: 'pluggy_connector_account_raw',
+      tableName: 'radar_pluggy_account_raw',
       timestamps: false,
     },
   )

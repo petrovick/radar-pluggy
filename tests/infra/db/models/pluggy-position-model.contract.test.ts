@@ -32,23 +32,23 @@ function createProxyQueryInterface(qi: QueryInterface, targetName: string, subst
   })
 }
 
-describe('contrato: model factory de pluggy_connector_positions vs. migration real', () => {
+describe('contrato: model factory de radar_pluggy_positions vs. migration real', () => {
   const sequelize = createDatabaseConnection(testDatabaseConfig())
   const queryInterface = sequelize.getQueryInterface()
 
   beforeAll(async () => {
     const tables = await queryInterface.showAllTables()
-    if (!tables.includes('pluggy_connector_positions')) {
+    if (!tables.includes('radar_pluggy_positions')) {
       if (!tables.includes('pluggy_positions')) {
         await createMigration.up(queryInterface, Sequelize)
       }
-      await queryInterface.renameTable('pluggy_positions', 'pluggy_connector_positions')
+      await queryInterface.renameTable('pluggy_positions', 'radar_pluggy_positions')
     }
-    const cols = await queryInterface.describeTable('pluggy_connector_positions')
+    const cols = await queryInterface.describeTable('radar_pluggy_positions')
     if (!cols.value) {
       await alterMigration.up(queryInterface, Sequelize)
     }
-    const colsAfterPrecision = await queryInterface.describeTable('pluggy_connector_positions')
+    const colsAfterPrecision = await queryInterface.describeTable('radar_pluggy_positions')
     if (!colsAfterPrecision.due_date) {
       await fullCaptureMigration.up(queryInterface, Sequelize)
     }
@@ -59,14 +59,14 @@ describe('contrato: model factory de pluggy_connector_positions vs. migration re
   })
 
   it('toda coluna da migration real tem uma coluna correspondente no model, e vice-versa', async () => {
-    const realColumns = await queryInterface.describeTable('pluggy_connector_positions')
+    const realColumns = await queryInterface.describeTable('radar_pluggy_positions')
     const model = definePluggyPositionModel(sequelize)
 
     expect(Object.keys(model.getAttributes()).sort()).toEqual(Object.keys(realColumns).sort())
   })
 
   it('allowNull do model bate com o allowNull real de cada coluna', async () => {
-    const realColumns = await queryInterface.describeTable('pluggy_connector_positions')
+    const realColumns = await queryInterface.describeTable('radar_pluggy_positions')
     const model = definePluggyPositionModel(sequelize)
     const attributes: Record<string, { allowNull?: boolean } | undefined> = model.getAttributes()
 

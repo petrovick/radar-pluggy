@@ -28,7 +28,7 @@ export function definePluggyItemModel(sequelize: Sequelize) {
       updated_at: { type: DataTypes.DATE(3), allowNull: false },
     },
     {
-      tableName: 'pluggy_connector_items',
+      tableName: 'radar_pluggy_items',
       timestamps: false,
     },
   )

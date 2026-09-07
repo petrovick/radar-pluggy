@@ -31,7 +31,7 @@ export function definePluggyConsentModel(sequelize: Sequelize) {
       updated_at: { type: DataTypes.DATE(3), allowNull: false },
     },
     {
-      tableName: 'pluggy_connector_consents',
+      tableName: 'radar_pluggy_consents',
       timestamps: false,
     },
   )

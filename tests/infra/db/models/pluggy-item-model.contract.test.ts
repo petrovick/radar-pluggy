@@ -12,21 +12,21 @@ const migration = require('../../../../src/infra/db/migrations/20260901105321-cr
   up: (queryInterface: QueryInterface, sequelizeLib: typeof Sequelize) => Promise<void>
 }
 
-describe('contrato: model factory de pluggy_connector_items vs. migration real', () => {
+describe('contrato: model factory de radar_pluggy_items vs. migration real', () => {
   const sequelize = createDatabaseConnection(testDatabaseConfig())
   const queryInterface = sequelize.getQueryInterface()
 
   beforeAll(async () => {
     // Só cria/renomeia a tabela se ela ainda não existir com o nome final (CI parte de banco vazio;
     // localmente a tabela já foi criada e renomeada) — o teste nunca dropa a tabela de um ambiente
-    // de desenvolvimento. O nome físico leva o prefixo `pluggy_connector_` (modelagem-de-dados); a
+    // de desenvolvimento. O nome físico leva o prefixo `radar_pluggy_` (modelagem-de-dados); a
     // migration original cria com o nome antigo, e a rename (20260903090000) leva ao nome final.
     const tables = await queryInterface.showAllTables()
-    if (!tables.includes('pluggy_connector_items')) {
+    if (!tables.includes('radar_pluggy_items')) {
       if (!tables.includes('pluggy_items')) {
         await migration.up(queryInterface, Sequelize)
       }
-      await queryInterface.renameTable('pluggy_items', 'pluggy_connector_items')
+      await queryInterface.renameTable('pluggy_items', 'radar_pluggy_items')
     }
   })
 
@@ -35,14 +35,14 @@ describe('contrato: model factory de pluggy_connector_items vs. migration real',
   })
 
   it('toda coluna da migration real tem uma coluna correspondente no model, e vice-versa', async () => {
-    const realColumns = await queryInterface.describeTable('pluggy_connector_items')
+    const realColumns = await queryInterface.describeTable('radar_pluggy_items')
     const model = definePluggyItemModel(sequelize)
 
     expect(Object.keys(model.getAttributes()).sort()).toEqual(Object.keys(realColumns).sort())
   })
 
   it('allowNull do model bate com o allowNull real de cada coluna', async () => {
-    const realColumns = await queryInterface.describeTable('pluggy_connector_items')
+    const realColumns = await queryInterface.describeTable('radar_pluggy_items')
     const model = definePluggyItemModel(sequelize)
     const attributes: Record<string, { allowNull?: boolean } | undefined> = model.getAttributes()
 

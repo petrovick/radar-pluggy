@@ -69,7 +69,7 @@ export function definePluggyAccountModel(sequelize: Sequelize) {
       updated_at: { type: DataTypes.DATE(3), allowNull: false },
     },
     {
-      tableName: 'pluggy_connector_accounts',
+      tableName: 'radar_pluggy_accounts',
       timestamps: false,
     },
   )

@@ -21,7 +21,7 @@ describe('PluggyLoanRep.save', () => {
   beforeAll(async () => {
     const queryInterface = sequelize.getQueryInterface()
     const tables = await queryInterface.showAllTables()
-    if (!tables.includes('pluggy_connector_loans')) {
+    if (!tables.includes('radar_pluggy_loans')) {
       const { createRequire } = await import('node:module')
       const require = createRequire(import.meta.url)
       const { Sequelize } = await import('sequelize')
@@ -30,7 +30,7 @@ describe('PluggyLoanRep.save', () => {
       }
       await migration.up(queryInterface, Sequelize)
     }
-    const cols = await queryInterface.describeTable('pluggy_connector_loans')
+    const cols = await queryInterface.describeTable('radar_pluggy_loans')
     if (!cols.ipoc_code) {
       const { createRequire } = await import('node:module')
       const require = createRequire(import.meta.url)

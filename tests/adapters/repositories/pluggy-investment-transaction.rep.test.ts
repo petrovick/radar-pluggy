@@ -20,7 +20,7 @@ describe('PluggyInvestmentTransactionRep', () => {
   beforeAll(async () => {
     const queryInterface = sequelize.getQueryInterface()
     const tables = await queryInterface.showAllTables()
-    if (!tables.includes('pluggy_connector_investment_transactions')) {
+    if (!tables.includes('radar_pluggy_investment_transactions')) {
       const { createRequire } = await import('node:module')
       const require = createRequire(import.meta.url)
       const { Sequelize } = await import('sequelize')

@@ -19,7 +19,7 @@ describe('PluggyLoanSnapshotRep', () => {
   beforeAll(async () => {
     const queryInterface = sequelize.getQueryInterface()
     const tables = await queryInterface.showAllTables()
-    if (!tables.includes('pluggy_connector_loan_snapshots')) {
+    if (!tables.includes('radar_pluggy_loan_snapshots')) {
       const { createRequire } = await import('node:module')
       const require = createRequire(import.meta.url)
       const { Sequelize } = await import('sequelize')

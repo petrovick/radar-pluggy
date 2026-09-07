@@ -33,7 +33,7 @@ export function definePluggyWebhookEventModel(sequelize: Sequelize) {
       updated_at: { type: DataTypes.DATE(3), allowNull: false },
     },
     {
-      tableName: 'pluggy_connector_webhook_events',
+      tableName: 'radar_pluggy_webhook_events',
       timestamps: false,
     },
   )

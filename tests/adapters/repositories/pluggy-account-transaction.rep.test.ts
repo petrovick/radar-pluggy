@@ -20,7 +20,7 @@ describe('PluggyAccountTransactionRep', () => {
   beforeAll(async () => {
     const queryInterface = sequelize.getQueryInterface()
     const tables = await queryInterface.showAllTables()
-    if (!tables.includes('pluggy_connector_account_transactions')) {
+    if (!tables.includes('radar_pluggy_account_transactions')) {
       const { createRequire } = await import('node:module')
       const require = createRequire(import.meta.url)
       const { Sequelize } = await import('sequelize')
@@ -29,7 +29,7 @@ describe('PluggyAccountTransactionRep', () => {
       }
       await migration.up(queryInterface, Sequelize)
     }
-    const cols = await queryInterface.describeTable('pluggy_connector_account_transactions')
+    const cols = await queryInterface.describeTable('radar_pluggy_account_transactions')
     if (!cols.credit_card_metadata) {
       const { createRequire } = await import('node:module')
       const require = createRequire(import.meta.url)

@@ -31,7 +31,7 @@ export class PluggyPositionSnapshotRep {
     this.getTransaction = params.getTransaction
   }
 
-  // Upsert por (item_id, investment_id, quota_date) sobre a constraint uq_pluggy_connector_position_snapshots_item_investment_date.
+  // Upsert por (item_id, investment_id, quota_date) sobre a constraint uq_radar_pluggy_position_snapshots_item_investment_date.
   // Quota_date repetida atualiza a linha sem duplicar (design.md D11).
   async save(input: SavePluggyPositionSnapshotInput): Promise<PluggyPositionSnapshot> {
     const draft = PluggyPositionSnapshot.create({

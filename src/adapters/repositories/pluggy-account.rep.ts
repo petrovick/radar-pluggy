@@ -44,7 +44,7 @@ export class PluggyAccountRep {
     this.getTransaction = params.getTransaction
   }
 
-  // Upsert por (item_id, account_id) sobre a constraint uq_pluggy_connector_accounts_item_account.
+  // Upsert por (item_id, account_id) sobre a constraint uq_radar_pluggy_accounts_item_account.
   async save(input: SavePluggyAccountInput): Promise<PluggyAccount> {
     const draft = PluggyAccount.create({
       itemId: input.itemId,

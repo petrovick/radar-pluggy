@@ -29,7 +29,7 @@ describe('PluggyPositionRep.save', () => {
   beforeAll(async () => {
     const queryInterface = sequelize.getQueryInterface()
     const tables = await queryInterface.showAllTables()
-    if (!tables.includes('pluggy_connector_positions')) {
+    if (!tables.includes('radar_pluggy_positions')) {
       const { createRequire } = await import('node:module')
       const require = createRequire(import.meta.url)
       const { Sequelize } = await import('sequelize')
@@ -37,9 +37,9 @@ describe('PluggyPositionRep.save', () => {
         up: (queryInterface: unknown, sequelizeLib: typeof Sequelize) => Promise<void>
       }
       await createMigration.up(queryInterface, Sequelize)
-      await queryInterface.renameTable('pluggy_positions', 'pluggy_connector_positions')
+      await queryInterface.renameTable('pluggy_positions', 'radar_pluggy_positions')
     }
-    const cols = await queryInterface.describeTable('pluggy_connector_positions')
+    const cols = await queryInterface.describeTable('radar_pluggy_positions')
     if (!cols.value) {
       const { createRequire } = await import('node:module')
       const require = createRequire(import.meta.url)
@@ -49,7 +49,7 @@ describe('PluggyPositionRep.save', () => {
       }
       await alterMigration.up(queryInterface, Sequelize)
     }
-    const colsAfterFullCapture = await queryInterface.describeTable('pluggy_connector_positions')
+    const colsAfterFullCapture = await queryInterface.describeTable('radar_pluggy_positions')
     if (!colsAfterFullCapture.due_date) {
       const { createRequire } = await import('node:module')
       const require = createRequire(import.meta.url)

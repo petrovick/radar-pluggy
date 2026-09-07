@@ -13,21 +13,21 @@ const webhookMigration = require('../../../../src/infra/db/migrations/2026090317
   up: (queryInterface: QueryInterface, sequelizeLib: typeof Sequelize) => Promise<void>
 }
 
-describe('contrato: model factory de pluggy_connector_credentials vs. migration real', () => {
+describe('contrato: model factory de radar_pluggy_credentials vs. migration real', () => {
   const sequelize = createDatabaseConnection(testDatabaseConfig())
   const queryInterface = sequelize.getQueryInterface()
 
   beforeAll(async () => {
-    // Nome físico final leva o prefixo `pluggy_connector_` (modelagem-de-dados); a migration
+    // Nome físico final leva o prefixo `radar_pluggy_` (modelagem-de-dados); a migration
     // original cria com o nome antigo, e a rename (20260903090000) leva ao nome final.
     const tables = await queryInterface.showAllTables()
-    if (!tables.includes('pluggy_connector_credentials')) {
+    if (!tables.includes('radar_pluggy_credentials')) {
       if (!tables.includes('pluggy_credentials')) {
         await migration.up(queryInterface, Sequelize)
       }
-      await queryInterface.renameTable('pluggy_credentials', 'pluggy_connector_credentials')
+      await queryInterface.renameTable('pluggy_credentials', 'radar_pluggy_credentials')
     }
-    const cols = await queryInterface.describeTable('pluggy_connector_credentials')
+    const cols = await queryInterface.describeTable('radar_pluggy_credentials')
     if (!cols.webhook_secret) {
       await webhookMigration.up(queryInterface, Sequelize)
     }
@@ -38,14 +38,14 @@ describe('contrato: model factory de pluggy_connector_credentials vs. migration 
   })
 
   it('toda coluna da migration real tem uma coluna correspondente no model, e vice-versa', async () => {
-    const realColumns = await queryInterface.describeTable('pluggy_connector_credentials')
+    const realColumns = await queryInterface.describeTable('radar_pluggy_credentials')
     const model = definePluggyCredentialModel(sequelize)
 
     expect(Object.keys(model.getAttributes()).sort()).toEqual(Object.keys(realColumns).sort())
   })
 
   it('allowNull do model bate com o allowNull real de cada coluna', async () => {
-    const realColumns = await queryInterface.describeTable('pluggy_connector_credentials')
+    const realColumns = await queryInterface.describeTable('radar_pluggy_credentials')
     const model = definePluggyCredentialModel(sequelize)
     const attributes: Record<string, { allowNull?: boolean } | undefined> = model.getAttributes()
 

@@ -1,6 +1,6 @@
 import { DataTypes, Model, type Sequelize } from 'sequelize'
 
-// Espelha, coluna a coluna, as migrations de pluggy_connector_positions (criação e precisão) — ver
+// Espelha, coluna a coluna, as migrations de radar_pluggy_positions (criação e precisão) — ver
 // teste de contrato em tests/infra/db/models/pluggy-position-model.contract.test.ts. Atributos em
 // snake_case, iguais à coluna: a tradução para camelCase acontece só no repositório (modelagem-de-dados).
 export interface PluggyPositionRow {
@@ -88,7 +88,7 @@ export function definePluggyPositionModel(sequelize: Sequelize) {
       updated_at: { type: DataTypes.DATE(3), allowNull: false },
     },
     {
-      tableName: 'pluggy_connector_positions',
+      tableName: 'radar_pluggy_positions',
       timestamps: false,
     },
   )

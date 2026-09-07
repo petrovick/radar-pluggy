@@ -522,7 +522,7 @@ um evento, a primeira coisa que o handler faz é **resolver o tenant**:
 
 1. Extrai `itemId` do payload (ainda não confiável — ver `fronteira-pluggy`, regra 8).
 2. Busca no próprio banco quem é o dono daquele `itemId` (`person_id` + credencial — tabela própria deste
-   serviço, `pluggy_connector_credentials`; ver `configuracao-credenciais-pluggy`).
+   serviço, `radar_pluggy_credentials`; ver `configuracao-credenciais-pluggy`).
 3. Só então valida a assinatura do webhook (W1), comparando contra o segredo **daquela pessoa específica** —
    não um segredo único de processo.
 4. Segue o fluxo normal (`GET /items/{id}`, `GET /investments`, marca d'água) usando a credencial daquela

@@ -21,7 +21,7 @@ export function definePluggyPositionRawModel(sequelize: Sequelize) {
       captured_at: { type: DataTypes.DATE(3), allowNull: false },
     },
     {
-      tableName: 'pluggy_connector_position_raw',
+      tableName: 'radar_pluggy_position_raw',
       timestamps: false,
     },
   )
