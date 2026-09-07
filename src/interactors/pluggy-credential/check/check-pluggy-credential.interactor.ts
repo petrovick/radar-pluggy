@@ -11,13 +11,11 @@ import type {
 // Checa se a pessoa tem credencial com ao menos um itemId vinculado (pronta para sincronizar); não
 // verifica nada além disso.
 //
-// SEM ROTA, DE PROPÓSITO — não reabra isso como código morto. Este caso de uso é a única
-// implementação dos dois cenários daquele requisito que são chaveados por PESSOA:
-// "pessoa sem nenhuma credencial cadastrada" e "pessoa com credencial mas sem itemId". As recusas do
-// `PluggyItemCredentialResolver` NÃO substituem: elas nomeiam `itemId`
+// Consumido por `GET /credentials/status` (expor-status-credencial-pluggy) — o handler traduz os
+// dois erros nomeados abaixo em `hasCredential:false` (200), nunca repassa como erro HTTP. As
+// recusas do `PluggyItemCredentialResolver` NÃO substituem este interactor: elas nomeiam `itemId`
 // (`PLUGGY_CREDENTIAL_ITEM_NOT_LINKED`), que é a resolução item→credencial, um caminho diferente.
-// Apagá-lo exigiria apagar os dois cenários da spec, que é mudança de contrato. Já foi levantado
-// como código sem consumidor por revisão automatizada e a decisão foi manter.
+// Sucesso continua `data: {}` — devolver itemIds aqui seria inventar payload sem consumidor.
 export class CheckPluggyCredentialInteractor {
   private readonly gateway: CheckPluggyCredentialGateway
 
