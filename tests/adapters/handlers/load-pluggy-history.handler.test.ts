@@ -6,6 +6,7 @@ import type { AuthenticatedRequest } from '../../../src/infra/http/middleware/au
 import type { ScopedRequest } from '../../../src/infra/http/middleware/request-scope.middleware.js'
 import { ApplicationError } from '../../../src/shared/application-error.js'
 import type { LoadPluggyHistoryOutput } from '../../../src/interactors/pluggy-history/load/load-pluggy-history.types.js'
+import { currentCallContext } from '../../../src/infra/tools/call-context.js'
 
 function buildResponse() {
   const sent: { status?: number; body?: unknown } = {}
@@ -28,22 +29,85 @@ const DEFAULT_HISTORY: LoadPluggyHistoryOutput = {
 
 const rootContainer = {} as AppContainerInstance
 
+type LeaseCalls = { acquired: { itemId: string; trigger: string }[]; released: { itemId: string; fencingToken: number }[] }
+
 function buildRequest(
   output: LoadPluggyHistoryOutput,
-  overrides: { personId?: number | undefined; itemId?: string } = {},
-): AuthenticatedRequest & ScopedRequest {
-  return {
+  overrides: {
+    personId?: number | undefined
+    itemId?: string
+    leaseBusy?: boolean
+    body?: Record<string, unknown>
+  } = {},
+): { req: AuthenticatedRequest & ScopedRequest; leaseCalls: LeaseCalls } {
+  const leaseCalls: LeaseCalls = { acquired: [], released: [] }
+  let fencingCounter = 0
+
+  const req = {
     personId: 'personId' in overrides ? overrides.personId : 7,
     params: { itemId: overrides.itemId ?? 'item-1' },
+    body: overrides.body,
     container: {
-      resolve: () => ({ execute: async () => output }),
+      resolve: (key: string) => {
+        if (key === 'pluggyItemIngestionLeaseRep') {
+          return {
+            tryAcquire: async (itemId: string, trigger: string) => {
+              leaseCalls.acquired.push({ itemId, trigger })
+              if (overrides.leaseBusy) return undefined
+              fencingCounter++
+              return fencingCounter
+            },
+            renew: async () => true,
+            release: async (itemId: string, fencingToken: number) => {
+              leaseCalls.released.push({ itemId, fencingToken })
+              return true
+            },
+          }
+        }
+        if (key === 'requestId') {
+          return 'req-correlation-1'
+        }
+        return { execute: async () => output }
+      },
     },
   } as unknown as AuthenticatedRequest & ScopedRequest
+
+  return { req, leaseCalls }
+}
+
+function flushMicrotasks(): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, 0))
 }
 
 describe('createLoadPluggyHistoryHandler', () => {
-  it('responde 200 com o resultado do histórico e só então dispara syncPosition', async () => {
+  it('adquire o lease de ingestão antes de qualquer trabalho, com trigger MANUAL_HISTORY_LOAD', async () => {
+    const { res } = buildResponse()
+    const { req, leaseCalls } = buildRequest(DEFAULT_HISTORY)
+    const handler = createLoadPluggyHistoryHandler(rootContainer, () => {})
+
+    await handler(req, res)
+
+    expect(leaseCalls.acquired).toEqual([{ itemId: 'item-1', trigger: 'MANUAL_HISTORY_LOAD' }])
+  })
+
+  it('lease ocupado recusa nomeado, sem chamar o caso de uso nem a sincronização de posição', async () => {
     const { res, sent } = buildResponse()
+    const { req } = buildRequest(DEFAULT_HISTORY, { leaseBusy: true })
+    let synced = false
+    const handler = createLoadPluggyHistoryHandler(rootContainer, () => {
+      synced = true
+    })
+
+    await handler(req, res)
+
+    expect(sent.status).toBe(400)
+    expect(sent.body).toEqual({ errorType: 'PLUGGY_ITEM_INGESTION_IN_PROGRESS' })
+    expect(synced).toBe(false)
+  })
+
+  it('responde 200 com o resultado do histórico e só então dispara a sincronização de posição', async () => {
+    const { res, sent } = buildResponse()
+    const { req } = buildRequest(DEFAULT_HISTORY)
     const order: string[] = []
     let syncArgs: [AppContainerInstance, string] | undefined
 
@@ -53,12 +117,13 @@ describe('createLoadPluggyHistoryHandler', () => {
       return originalJson(body)
     }) as Response['json']
 
-    const handler = createLoadPluggyHistoryHandler(rootContainer, (container, itemId) => {
+    const handler = createLoadPluggyHistoryHandler(rootContainer, (container, itemId, _leaseGuard, onSettled) => {
       order.push('syncPosition')
       syncArgs = [container, itemId]
+      onSettled()
     })
 
-    await handler(buildRequest(DEFAULT_HISTORY), res)
+    await handler(req, res)
 
     expect(sent.status).toBe(200)
     expect(sent.body).toEqual({ data: DEFAULT_HISTORY.data })
@@ -67,16 +132,72 @@ describe('createLoadPluggyHistoryHandler', () => {
     expect(syncArgs).toEqual([rootContainer, 'item-1'])
   })
 
-  it('recusa nomeada do histórico vira 400 com {errorType, extras}, sem disparar syncPosition', async () => {
+  it('tasks.md 8.8/D30: History e o disparo de Position rodam sob trigger=MANUAL_HISTORY_LOAD, mesmo requestCorrelationId', async () => {
+    const { res } = buildResponse()
+    let historyContext: { trigger: string | undefined; requestCorrelationId: string | undefined } | undefined
+    let positionContext: { trigger: string | undefined; requestCorrelationId: string | undefined } | undefined
+    const req = {
+      personId: 7,
+      params: { itemId: 'item-1' },
+      container: {
+        resolve: (key: string) => {
+          if (key === 'pluggyItemIngestionLeaseRep') {
+            return { tryAcquire: async () => 1, renew: async () => true, release: async () => true }
+          }
+          if (key === 'requestId') {
+            return 'req-correlation-1'
+          }
+          return {
+            execute: async () => {
+              const ctx = currentCallContext()
+              historyContext = { trigger: ctx?.trigger, requestCorrelationId: ctx?.requestCorrelationId }
+              return DEFAULT_HISTORY
+            },
+          }
+        },
+      },
+    } as unknown as AuthenticatedRequest & ScopedRequest
+    const handler = createLoadPluggyHistoryHandler(rootContainer, () => {
+      const ctx = currentCallContext()
+      positionContext = { trigger: ctx?.trigger, requestCorrelationId: ctx?.requestCorrelationId }
+    })
+
+    await handler(req, res)
+
+    expect(historyContext).toEqual({ trigger: 'MANUAL_HISTORY_LOAD', requestCorrelationId: 'req-correlation-1' })
+    expect(positionContext).toEqual({ trigger: 'MANUAL_HISTORY_LOAD', requestCorrelationId: 'req-correlation-1' })
+  })
+
+  it('libera o lease só depois que a sincronização de posição concluir (onSettled), nunca antes (D30)', async () => {
+    const { res } = buildResponse()
+    const { req, leaseCalls } = buildRequest(DEFAULT_HISTORY)
+    let settle: (() => void) | undefined
+
+    const handler = createLoadPluggyHistoryHandler(rootContainer, (_container, _itemId, _leaseGuard, onSettled) => {
+      settle = onSettled
+    })
+
+    await handler(req, res)
+
+    expect(leaseCalls.released).toEqual([])
+
+    settle?.()
+    await flushMicrotasks()
+
+    expect(leaseCalls.released).toEqual([{ itemId: 'item-1', fencingToken: 1 }])
+  })
+
+  it('recusa nomeada do histórico vira 400 com {errorType, extras}, libera o lease, sem disparar sincronização', async () => {
     const { res, sent } = buildResponse()
     const error = new ApplicationError('PLUGGY_CREDENTIAL_ITEM_NOT_LINKED', { itemId: 'item-1' })
+    const { req, leaseCalls } = buildRequest({ error })
     let synced = false
 
     const handler = createLoadPluggyHistoryHandler(rootContainer, () => {
       synced = true
     })
 
-    await handler(buildRequest({ error }), res)
+    await handler(req, res)
 
     expect(sent.status).toBe(400)
     expect(sent.body).toEqual({
@@ -85,27 +206,31 @@ describe('createLoadPluggyHistoryHandler', () => {
     })
     // Dono não confirmado: sincronizar posição gastaria I/O num item que pode não ser da pessoa.
     expect(synced).toBe(false)
+    expect(leaseCalls.released).toEqual([{ itemId: 'item-1', fencingToken: 1 }])
   })
 
-  it('erro lançado por syncPosition não derruba a resposta já enviada', async () => {
+  it('erro lançado ao DISPARAR a sincronização de posição não derruba a resposta já enviada, e libera o lease', async () => {
     const { res, sent } = buildResponse()
+    const { req, leaseCalls } = buildRequest(DEFAULT_HISTORY)
     const handler = createLoadPluggyHistoryHandler(rootContainer, () => {
       throw new Error('syncPosition não deveria propagar')
     })
 
-    await expect(handler(buildRequest(DEFAULT_HISTORY), res)).resolves.toBeUndefined()
+    await expect(handler(req, res)).resolves.toBeUndefined()
     expect(sent.status).toBe(200)
     expect(sent.body).toEqual({ data: DEFAULT_HISTORY.data })
+    expect(leaseCalls.released).toEqual([{ itemId: 'item-1', fencingToken: 1 }])
   })
 
-  it('itemId ausente na rota recusa nomeando o campo, sem chamar o caso de uso nem syncPosition', async () => {
+  it('itemId ausente na rota recusa nomeando o campo, sem chamar o caso de uso nem a sincronização', async () => {
     const { res, sent } = buildResponse()
+    const { req } = buildRequest(DEFAULT_HISTORY, { itemId: '  ' })
     let synced = false
     const handler = createLoadPluggyHistoryHandler(rootContainer, () => {
       synced = true
     })
 
-    await handler(buildRequest(DEFAULT_HISTORY, { itemId: '  ' }), res)
+    await handler(req, res)
 
     expect(sent.status).toBe(400)
     expect(sent.body).toEqual({ errorType: 'PLUGGY_HISTORY_ITEM_ID_MISSING' })
@@ -114,22 +239,37 @@ describe('createLoadPluggyHistoryHandler', () => {
 
   it('sem personId responde 500 sem vazar detalhe — a rota nunca deveria ser alcançável assim', async () => {
     const { res, sent } = buildResponse()
+    const { req } = buildRequest(DEFAULT_HISTORY, { personId: undefined })
     const handler = createLoadPluggyHistoryHandler(rootContainer, () => {})
 
-    await handler(buildRequest(DEFAULT_HISTORY, { personId: undefined }), res)
+    await handler(req, res)
 
     expect(sent.status).toBe(500)
     expect(sent.body).toEqual({ errorType: 'PLUGGY_CONNECTOR_UNEXPECTED_ERROR' })
   })
 
-  it('erro inesperado no wiring do histórico vira 500 controlado, nunca stack trace', async () => {
+  it('erro inesperado no wiring do histórico vira 500 controlado, nunca stack trace, e libera o lease', async () => {
     const { res, sent } = buildResponse()
     const handler = createLoadPluggyHistoryHandler(rootContainer, () => {})
+    const leaseCalls: LeaseCalls = { acquired: [], released: [] }
     const req = {
       personId: 7,
       params: { itemId: 'item-1' },
       container: {
-        resolve: () => {
+        resolve: (key: string) => {
+          if (key === 'pluggyItemIngestionLeaseRep') {
+            return {
+              tryAcquire: async () => {
+                leaseCalls.acquired.push({ itemId: 'item-1', trigger: 'MANUAL_HISTORY_LOAD' })
+                return 1
+              },
+              renew: async () => true,
+              release: async (itemId: string, fencingToken: number) => {
+                leaseCalls.released.push({ itemId, fencingToken })
+                return true
+              },
+            }
+          }
           throw new Error('registro ausente no container')
         },
       },
@@ -139,6 +279,7 @@ describe('createLoadPluggyHistoryHandler', () => {
 
     expect(sent.status).toBe(500)
     expect(sent.body).toEqual({ errorType: 'PLUGGY_HISTORY_LOAD_FAILED' })
+    expect(leaseCalls.released).toEqual([{ itemId: 'item-1', fencingToken: 1 }])
   })
 
   it('repassa origin USER e personId do JWT ao interactor, ignorando personId no corpo', async () => {
@@ -151,17 +292,22 @@ describe('createLoadPluggyHistoryHandler', () => {
       params: { itemId: 'item-1' },
       body: { personId: 999 }, // tentativa de bypass via body
       container: {
-        resolve: () => ({
-          execute: async (input: unknown) => {
-            executedInput = input
-            return DEFAULT_HISTORY
-          },
-        }),
+        resolve: (key: string) => {
+          if (key === 'pluggyItemIngestionLeaseRep') {
+            return { tryAcquire: async () => 1, renew: async () => true, release: async () => true }
+          }
+          return {
+            execute: async (input: unknown) => {
+              executedInput = input
+              return DEFAULT_HISTORY
+            },
+          }
+        },
       },
     } as unknown as AuthenticatedRequest & ScopedRequest
 
     await handler(req, res)
 
-    expect(executedInput).toEqual({ origin: 'USER', personId: 42, itemId: 'item-1' })
+    expect(executedInput).toMatchObject({ origin: 'USER', personId: 42, itemId: 'item-1' })
   })
 })

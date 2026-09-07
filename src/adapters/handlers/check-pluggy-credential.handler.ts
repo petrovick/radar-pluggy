@@ -39,9 +39,10 @@ export async function checkPluggyCredentialHandler(
       return
     }
 
-    // As duas ausências de negócio nunca viram erro HTTP. O front só precisa do booleano para
-    // decidir visibilidade de menu (design.md D2/D3): não repassamos `errorType` nesse caso.
-    res.status(200).json({ hasCredential: data !== undefined })
+    // As duas ausências de negócio nunca viram erro HTTP. Mudança aditiva (design.md D10): sem
+    // credencial, a resposta continua exatamente `{hasCredential: false}` — sem `items`, mesmo shape
+    // de hoje — para nunca quebrar um consumidor que só lê `hasCredential`.
+    res.status(200).json(data !== undefined ? { hasCredential: true, items: data.items } : { hasCredential: false })
   } catch {
     // O interactor já traduz erro em `{error}`; cair aqui é falha do próprio wiring/resolução.
     res.status(500).json({ errorType: 'PLUGGY_CREDENTIAL_STATUS_CHECK_FAILED' })

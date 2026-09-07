@@ -18,6 +18,8 @@ import { definePluggyAccountTransactionRawModel } from '../../../../src/infra/db
 import { definePluggyAccountModel } from '../../../../src/infra/db/models/pluggy-account-model.js'
 import { definePluggyAccountRawModel } from '../../../../src/infra/db/models/pluggy-account-raw-model.js'
 import { definePluggyHistoryCoverageModel } from '../../../../src/infra/db/models/pluggy-history-coverage-model.js'
+import { definePluggySyncProgressModel } from '../../../../src/infra/db/models/pluggy-sync-progress-model.js'
+import { PluggySyncProgressRep } from '../../../../src/adapters/repositories/pluggy-sync-progress.rep.js'
 import { definePluggyInvestmentTransactionModel } from '../../../../src/infra/db/models/pluggy-investment-transaction-model.js'
 import { definePluggyInvestmentTransactionRawModel } from '../../../../src/infra/db/models/pluggy-investment-transaction-raw-model.js'
 import type { AppContainer } from '../../../../src/infra/bootstrap/register.js'
@@ -485,6 +487,150 @@ describe('LoadPluggyHistoryImpl.readCashSources', () => {
 
     expect(await accountModel.count({ where: { item_id: itemId } })).toBe(0)
     expect(await accountRawModel.count({ where: { item_id: itemId } })).toBe(0)
+  })
+})
+
+describe('LoadPluggyHistoryImpl.readCurrentItemState', () => {
+  function buildImpl(itemSnapshot: Record<string, unknown>) {
+    const container = {
+      db: { models: {} },
+      logger: { addContext: () => {}, info: () => {}, warn: () => {}, error: () => {} },
+      getTransaction: () => null,
+      setTransaction: () => {},
+      pluggyItemCredentialResolver: { clientFor: async () => fakeSdkClient },
+      pluggyItemStateResolver: { read: async () => itemSnapshot },
+    } as unknown as AppContainer
+
+    return new LoadPluggyHistoryImpl(container)
+  }
+
+  it('traduz o snapshot do item para o estado que o caso de uso consome', async () => {
+    const impl = buildImpl({
+      status: 'UPDATED',
+      executionStatus: 'PARTIAL_SUCCESS',
+      lastUpdatedAt: '2026-08-01T00:00:00.000Z',
+      updatedAt: '2026-07-01T00:00:00.000Z',
+      itemProducts: ['ACCOUNTS'],
+      products: { accounts: { isUpdated: true, lastUpdatedAt: '2026-08-01T00:00:00.000Z', warnings: [] } },
+      connector: undefined,
+      raw: {},
+    })
+
+    await expect(impl.readCurrentItemState('item-1')).resolves.toEqual({
+      executionStatus: 'PARTIAL_SUCCESS',
+      lastUpdatedAt: '2026-08-01T00:00:00.000Z',
+      updatedAt: '2026-07-01T00:00:00.000Z',
+      itemProducts: ['ACCOUNTS'],
+      products: { accounts: { isUpdated: true, lastUpdatedAt: '2026-08-01T00:00:00.000Z', warnings: [] } },
+    })
+  })
+})
+
+// Requer MySQL alcançável: prova que o gateway delega para `PluggySyncProgressRep` sempre com
+// `consumer = HISTORY_LOAD`, nunca outro valor.
+describe('LoadPluggyHistoryImpl.readSyncProgress / advanceSyncProgress', () => {
+  const sequelize = createDatabaseConnection(testDatabaseConfig())
+  const syncProgressModel = definePluggySyncProgressModel(sequelize)
+  const itemIdsToCleanup: string[] = []
+
+  afterEach(async () => {
+    const itemId = itemIdsToCleanup.pop()
+    if (itemId !== undefined) {
+      await syncProgressModel.destroy({ where: { item_id: itemId } })
+    }
+  })
+
+  afterAll(async () => {
+    await sequelize.close()
+  })
+
+  function buildImpl() {
+    const transactions = new Map<string, Transaction | null>()
+    const container = {
+      db: { Sequelize: SequelizeLib, connections: { [DB_NAMES.MAIN]: sequelize }, models: { pluggySyncProgress: syncProgressModel } },
+      logger: { addContext: () => {}, info: () => {}, warn: () => {}, error: () => {} },
+      getTransaction: (name: string) => transactions.get(name) ?? null,
+      setTransaction: (name: string, tx: Transaction | null) => {
+        transactions.set(name, tx)
+      },
+    } as unknown as AppContainer
+
+    const mutable = container as unknown as Record<string, unknown>
+    mutable.pluggySyncProgressRep = new PluggySyncProgressRep(container)
+    return new LoadPluggyHistoryImpl(container)
+  }
+
+  it('advança e lê sempre sob o consumidor HISTORY_LOAD', async () => {
+    const itemId = randomUUID()
+    itemIdsToCleanup.push(itemId)
+    const impl = buildImpl()
+
+    await impl.advanceSyncProgress(itemId, 'ACCOUNTS', new Date('2026-08-01T00:00:00.000Z'))
+
+    await expect(impl.readSyncProgress(itemId, 'ACCOUNTS')).resolves.toEqual(new Date('2026-08-01T00:00:00.000Z'))
+    const row = await syncProgressModel.findOne({ where: { item_id: itemId } })
+    expect(row?.get('consumer')).toBe('HISTORY_LOAD')
+    expect(row?.get('source')).toBe('ACCOUNTS')
+  })
+})
+
+// Requer MySQL alcançável: prova que `reconcileAccounts` de fato remove as contas ausentes da
+// leitura atual (design.md D21), delegando para `PluggyAccountRep.reconcile`.
+describe('LoadPluggyHistoryImpl.reconcileAccounts', () => {
+  const sequelize = createDatabaseConnection(testDatabaseConfig())
+  const accountModel = definePluggyAccountModel(sequelize)
+  const itemIdsToCleanup: string[] = []
+
+  afterEach(async () => {
+    const itemId = itemIdsToCleanup.pop()
+    if (itemId !== undefined) {
+      await accountModel.destroy({ where: { item_id: itemId } })
+    }
+  })
+
+  afterAll(async () => {
+    await sequelize.close()
+  })
+
+  function buildImpl() {
+    const transactions = new Map<string, Transaction | null>()
+    const container = {
+      db: { Sequelize: SequelizeLib, connections: { [DB_NAMES.MAIN]: sequelize }, models: { pluggyAccount: accountModel } },
+      logger: { addContext: () => {}, info: () => {}, warn: () => {}, error: () => {} },
+      getTransaction: (name: string) => transactions.get(name) ?? null,
+      setTransaction: (name: string, tx: Transaction | null) => {
+        transactions.set(name, tx)
+      },
+    } as unknown as AppContainer
+
+    const mutable = container as unknown as Record<string, unknown>
+    mutable.pluggyAccountRep = new PluggyAccountRep(container)
+    return new LoadPluggyHistoryImpl(container)
+  }
+
+  it('remove contas ausentes da leitura autoritativa atual', async () => {
+    const itemId = randomUUID()
+    itemIdsToCleanup.push(itemId)
+    const impl = buildImpl()
+    const now = new Date()
+
+    await accountModel.create({
+      item_id: itemId,
+      account_id: 'acc-1',
+      type: 'BANK',
+      number: '1',
+      name: 'Conta',
+      balance: '10.00',
+      currency_code: 'BRL',
+      provider_created_at: now,
+      provider_updated_at: now,
+      created_at: now,
+      updated_at: now,
+    } as never)
+
+    await impl.reconcileAccounts(itemId, [])
+
+    expect(await accountModel.count({ where: { item_id: itemId } })).toBe(0)
   })
 })
 

@@ -205,6 +205,34 @@ describe('PluggyPositionRep.save', () => {
     expect(row?.get('amount_profit')).toBeNull()
   })
 
+  it('reconcile remove investimentos ausentes da leitura autoritativa, preservando os presentes (D21)', async () => {
+    const itemId = randomUUID()
+    const investment1 = randomUUID()
+    const investment2 = randomUUID()
+    itemIdsToCleanup.push(itemId)
+
+    await repository.save(baseInput(itemId, investment1))
+    await repository.save(baseInput(itemId, investment2))
+
+    const removed = await repository.reconcile(itemId, [investment1])
+    expect(removed).toBe(1)
+
+    const positions = await repository.findByItemIds([itemId])
+    expect(positions.map((p) => p.getInvestmentId())).toEqual([investment1])
+  })
+
+  it('reconcile com lista vazia remove todas as posições do item (portfólio vendido por completo)', async () => {
+    const itemId = randomUUID()
+    const investmentId = randomUUID()
+    itemIdsToCleanup.push(itemId)
+
+    await repository.save(baseInput(itemId, investmentId))
+
+    const removed = await repository.reconcile(itemId, [])
+    expect(removed).toBe(1)
+    expect(await repository.findByItemIds([itemId])).toHaveLength(0)
+  })
+
   it('recusa gravação sem investmentId antes de tocar o banco', async () => {
     await expect(
       repository.save({ ...baseInput('item-x', ''), investmentId: '' }),

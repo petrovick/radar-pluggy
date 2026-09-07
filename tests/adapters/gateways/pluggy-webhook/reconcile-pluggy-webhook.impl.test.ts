@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest'
 import ReconcilePluggyWebhookImpl from '../../../../src/adapters/gateways/pluggy-webhook/reconcile-pluggy-webhook.impl.js'
 import type { AppContainer } from '../../../../src/infra/bootstrap/register.js'
 import { PluggyCredential } from '../../../../src/entities/pluggy-credential.js'
+import { currentCallContext } from '../../../../src/infra/tools/call-context.js'
 
 function build(credentials: PluggyCredential[], provisionCalls: number[]) {
   const container = {
@@ -60,5 +61,26 @@ describe('ReconcilePluggyWebhookImpl', () => {
     await impl.provisionWebhook(7)
 
     expect(provisionCalls).toEqual([7])
+  })
+
+  it('provisionWebhook roda sob trigger=WEBHOOK_RECONCILIATION (tasks.md 8.8)', async () => {
+    let triggerSeen: string | undefined
+    const container = {
+      logger: { addContext: () => {}, info: () => {}, warn: () => {}, error: () => {} },
+      getTransaction: () => null,
+      setTransaction: () => {},
+      db: { models: {} },
+      pluggyCredentialRep: { findByPersonId: async () => [] },
+      pluggyWebhookProvisioner: {
+        provisionFor: async () => {
+          triggerSeen = currentCallContext()?.trigger
+        },
+      },
+    } as unknown as AppContainer
+    const impl = new ReconcilePluggyWebhookImpl(container)
+
+    await impl.provisionWebhook(7)
+
+    expect(triggerSeen).toBe('WEBHOOK_RECONCILIATION')
   })
 })

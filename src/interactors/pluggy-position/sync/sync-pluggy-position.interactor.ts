@@ -1,21 +1,31 @@
 import { ApplicationError } from '../../../shared/application-error.js'
+import { isEligible, isUsable, toVersionAt } from '../../../adapters/gateways/pluggy-source-state.js'
+import type { PluggySource } from '../../../adapters/gateways/pluggy-source-catalog.js'
+import type { LeaseGuard } from '../../../shared/lease-guard.js'
 import type { AppContainer } from '../../../infra/bootstrap/register.js'
 import type {
-  LastSyncedItemState,
+  CurrentItemState,
   SyncPluggyPositionGateway,
   SyncPluggyPositionInput,
   SyncPluggyPositionOutput,
 } from './sync-pluggy-position.types.js'
 
-// Orquestra a sincronização da posição financeira de um item (design.md, sincronizacao-posicao-pluggy):
-// lê o estado atual do item, aplica o portão de marca d’água (D1 — só no nível do item,
-// fronteira-pluggy regra 6) e, se abrir, percorre todas as páginas de investimentos (ativo) e de
-// empréstimos (passivo) e manda persistir. Mesmo item, mesmo consentimento, mesma chamada de
-// `fetchItem` para os dois produtos — uma segunda leitura do item custaria cota à toa.
+interface SourceEvaluation {
+  outdated: boolean
+  versionAt: Date | undefined
+}
+
+// Orquestra a sincronização da posição financeira de um item (design.md D4/D6/D13/D21/D26): lê o
+// estado atual do item e processa `INVESTMENTS`/`LOANS` de forma INDEPENDENTE, cada um sob seu
+// próprio portão de marca d'água (`PluggySyncProgressRep`, `consumer = POSITION_SYNC` — linhas
+// próprias deste consumidor, nunca as de `HISTORY_LOAD` para `INVESTMENTS`, D4). Aceita
+// `executionStatus` `SUCCESS` ou `PARTIAL_SUCCESS` — uma fonte recusada (`isUsable === false`) nunca
+// impede a outra.
 //
-// Uma única dependência, o gateway do próprio caso de uso (arquitetura-camadas, regra 2). O caso de
-// uso não conhece repositório, model, Sequelize nem transação: atomicidade de cada fotografia com o
-// seu snapshot histórico (D11) é decisão interna de `savePositionsWithSnapshots`/`saveLoansWithSnapshots`.
+// `radar_pluggy_items` (D5) preserva seu significado estrito de "última ingestão completa e
+// bem-sucedida": só é atualizado quando `executionStatus === 'SUCCESS'`.
+//
+// Uma única dependência, o gateway do próprio caso de uso (arquitetura-camadas, regra 2).
 export class SyncPluggyPositionInteractor {
   private readonly gateway: SyncPluggyPositionGateway
 
@@ -24,32 +34,31 @@ export class SyncPluggyPositionInteractor {
   }
 
   async execute(input: SyncPluggyPositionInput): Promise<SyncPluggyPositionOutput> {
-    const { itemId } = input
+    const { itemId, leaseGuard } = input
     this.gateway.addContext({ messageType: 'SYNC_PLUGGY_POSITION', itemId })
 
     try {
-      const freshItem = await this.gateway.readCurrentItemState(itemId)
-      if (freshItem.executionStatus !== 'SUCCESS') {
-        this.gateway.logInfo('Item não está em SUCCESS, sincronização não ocorre', {
-          executionStatus: freshItem.executionStatus,
+      const item = await this.gateway.readCurrentItemState(itemId)
+
+      if (item.executionStatus !== 'SUCCESS' && item.executionStatus !== 'PARTIAL_SUCCESS') {
+        this.gateway.logInfo('Item não está em SUCCESS/PARTIAL_SUCCESS, sincronização não ocorre', {
+          executionStatus: item.executionStatus,
         })
-        return { data: { synced: false, positionsSynced: 0, loansSynced: 0 } }
-      }
-      if (freshItem.lastUpdatedAt === undefined) {
-        // SUCCESS sem lastUpdatedAt não é "sem mudança" — é a Pluggy documentar o campo como presente
-        // quando a sincronização termina, e ele não vir. Recusa nomeada em vez de portão fechado em
-        // silêncio (achado do engenheiro-pluggy-connector).
-        this.gateway.logError('Item em SUCCESS sem lastUpdatedAt')
-        return { error: new ApplicationError('PLUGGY_ITEM_SUCCESS_WITHOUT_LAST_UPDATED_AT', { itemId }) }
+        return { data: notSynced() }
       }
 
-      const storedItem = await this.gateway.readLastSyncedItemState(itemId)
-      if (!this.gateOpen(freshItem.lastUpdatedAt, storedItem)) {
-        this.gateway.logInfo('Portão de marca d’água fechado, nenhuma chamada de investimentos nem de empréstimos')
-        return { data: { synced: false, positionsSynced: 0, loansSynced: 0 } }
+      const investmentsEval = await this.evaluateSource(itemId, item, 'INVESTMENTS')
+      const loansEval = await this.evaluateSource(itemId, item, 'LOANS')
+
+      if (!investmentsEval.outdated && !loansEval.outdated) {
+        this.gateway.logInfo('Nenhuma fonte desatualizada, sincronização não ocorre')
+        return { data: notSynced() }
       }
 
-      const freshLastUpdatedAt = new Date(freshItem.lastUpdatedAt)
+      const leaseLost = this.refuseIfLeaseLost(itemId, leaseGuard)
+      if (leaseLost) {
+        return { error: leaseLost }
+      }
 
       const consentStatus = await this.gateway.readConsentStatus(itemId)
       await this.gateway.saveConsentStatus(itemId, consentStatus)
@@ -67,60 +76,68 @@ export class SyncPluggyPositionInteractor {
         }
       }
 
-      const investmentsResult = await this.readAllPages(
-        (page) => this.gateway.readInvestmentsPage(itemId, page),
-        { pageMismatch: 'PLUGGY_INVESTMENTS_PAGE_MISMATCH', totalPagesChanged: 'PLUGGY_INVESTMENTS_TOTAL_PAGES_CHANGED' },
-        itemId,
-      )
-      if ('error' in investmentsResult) {
-        return { error: investmentsResult.error }
-      }
-      const allInvestments = investmentsResult.items
-
-      if (allInvestments.length === 0) {
-        // Portão aberto mas lista vazia: consentimento revogado/expirado devolve vazio, nunca zero
-        // posições (D4, fronteira-pluggy regra 3).
-        this.gateway.logError('Lista de investimentos vazia com portão aberto')
-        return { error: new ApplicationError('PLUGGY_INVESTMENTS_EMPTY_WITH_SUCCESS_STATUS', { itemId }) }
-      }
-
-      // Lado passivo (empréstimo), mesmo portão e mesmo consentimento já confirmados acima — mesma
-      // disciplina de varredura completa antes de persistir qualquer coisa (nem investimento, nem
-      // empréstimo fica pela metade se a paginação de loan divergir).
-      const loansResult = await this.readAllPages(
-        (page) => this.gateway.readLoansPage(itemId, page),
-        { pageMismatch: 'PLUGGY_LOANS_PAGE_MISMATCH', totalPagesChanged: 'PLUGGY_LOANS_TOTAL_PAGES_CHANGED' },
-        itemId,
-      )
-      if ('error' in loansResult) {
-        return { error: loansResult.error }
-      }
-      const allLoans = loansResult.items
-
-      // Lista de empréstimos vazia é legítima aqui (nem todo item tem dívida) — diferente de
-      // investimentos, o consentimento já foi confirmado ativo pela lista não vazia acima, então
-      // vazio não é sinal de revogação (fronteira-pluggy regra 3).
-
       const syncedAt = new Date()
 
-      this.gateway.logInfo('Persistindo fotografia e snapshot histórico', { positions: allInvestments.length })
-      await this.gateway.savePositionsWithSnapshots(allInvestments, syncedAt)
+      let positionsSynced = 0
+      if (investmentsEval.outdated && investmentsEval.versionAt !== undefined) {
+        const investmentsResult = await this.readAllPages(
+          (page) => this.gateway.readInvestmentsPage(itemId, page),
+          { pageMismatch: 'PLUGGY_INVESTMENTS_PAGE_MISMATCH', totalPagesChanged: 'PLUGGY_INVESTMENTS_TOTAL_PAGES_CHANGED' },
+          itemId,
+          leaseGuard,
+        )
+        if ('error' in investmentsResult) {
+          return { error: investmentsResult.error }
+        }
 
-      this.gateway.logInfo('Persistindo empréstimos e snapshot histórico', { loans: allLoans.length })
-      await this.gateway.saveLoansWithSnapshots(allLoans, syncedAt)
+        const leaseLostBeforeSave = this.refuseIfLeaseLost(itemId, leaseGuard)
+        if (leaseLostBeforeSave) {
+          return { error: leaseLostBeforeSave }
+        }
 
-      // Só depois de tudo persistido a marca d'água avança — falha acima deixa o item elegível na
-      // próxima tentativa.
-      await this.gateway.saveSyncedItemState({
-        itemId,
-        status: freshItem.status,
-        executionStatus: freshItem.executionStatus,
-        lastUpdatedAt: freshLastUpdatedAt,
-        raw: freshItem.raw,
-      })
+        this.gateway.logInfo('Persistindo fotografia e snapshot histórico', { positions: investmentsResult.items.length })
+        await this.gateway.savePositionsWithSnapshots(itemId, investmentsResult.items, syncedAt)
+        await this.gateway.advanceSyncProgress(itemId, 'INVESTMENTS', investmentsEval.versionAt)
+        positionsSynced = investmentsResult.items.length
+      }
 
-      this.gateway.logInfo('Sincronização de posição concluída')
-      return { data: { synced: true, positionsSynced: allInvestments.length, loansSynced: allLoans.length } }
+      let loansSynced = 0
+      if (loansEval.outdated && loansEval.versionAt !== undefined) {
+        const loansResult = await this.readAllPages(
+          (page) => this.gateway.readLoansPage(itemId, page),
+          { pageMismatch: 'PLUGGY_LOANS_PAGE_MISMATCH', totalPagesChanged: 'PLUGGY_LOANS_TOTAL_PAGES_CHANGED' },
+          itemId,
+          leaseGuard,
+        )
+        if ('error' in loansResult) {
+          return { error: loansResult.error }
+        }
+
+        const leaseLostBeforeSave = this.refuseIfLeaseLost(itemId, leaseGuard)
+        if (leaseLostBeforeSave) {
+          return { error: leaseLostBeforeSave }
+        }
+
+        this.gateway.logInfo('Persistindo empréstimos e snapshot histórico', { loans: loansResult.items.length })
+        await this.gateway.saveLoansWithSnapshots(itemId, loansResult.items, syncedAt)
+        await this.gateway.advanceSyncProgress(itemId, 'LOANS', loansEval.versionAt)
+        loansSynced = loansResult.items.length
+      }
+
+      // D5: preserva, sem reinterpretação, "última ingestão completa e bem-sucedida" — nunca em
+      // PARTIAL_SUCCESS, mesmo com uma ou mais fontes processadas nesta execução.
+      if (item.executionStatus === 'SUCCESS') {
+        await this.gateway.saveSyncedItemState({
+          itemId,
+          status: item.status,
+          executionStatus: item.executionStatus,
+          lastUpdatedAt: new Date(item.lastUpdatedAt ?? item.updatedAt),
+          raw: item.raw,
+        })
+      }
+
+      this.gateway.logInfo('Sincronização de posição concluída', { positionsSynced, loansSynced })
+      return { data: { synced: true, positionsSynced, loansSynced } }
     } catch (err) {
       this.gateway.logError('Erro inesperado na sincronização de posição', { err })
       if (err instanceof ApplicationError) {
@@ -130,13 +147,22 @@ export class SyncPluggyPositionInteractor {
     }
   }
 
-  private gateOpen(freshLastUpdatedAt: string, storedItem: LastSyncedItemState | undefined): boolean {
-    const storedLastUpdatedAt = storedItem?.getLastUpdatedAt()
-    if (storedLastUpdatedAt === undefined) {
-      return true
+  // Avalia se `source` está habilitada (D26), utilizável nesta execução (D6) e com marca d'água
+  // desatualizada (D4) — nessa ordem: elegibilidade por `itemProducts` sempre primeiro. Nunca chama
+  // a Pluggy: só lê a marca d'água local.
+  private async evaluateSource(itemId: string, item: CurrentItemState, source: PluggySource): Promise<SourceEvaluation> {
+    if (!isEligible(item.itemProducts, source) || !isUsable(item, source)) {
+      return { outdated: false, versionAt: undefined }
     }
 
-    return new Date(freshLastUpdatedAt).getTime() > storedLastUpdatedAt.getTime()
+    const versionAt = toVersionAt(item, source, itemId)
+    if (versionAt === undefined) {
+      return { outdated: false, versionAt: undefined }
+    }
+
+    const watermark = await this.gateway.readSyncProgress(itemId, source)
+    const outdated = watermark === undefined || versionAt.getTime() > watermark.getTime()
+    return { outdated, versionAt }
   }
 
   // Investimento e empréstimo são páginados exatamente da mesma forma (mesma disciplina de recusa
@@ -147,12 +173,18 @@ export class SyncPluggyPositionInteractor {
     readPage: (page: number) => Promise<{ results: T[]; page: number; totalPages: number }>,
     errorTypes: { pageMismatch: string; totalPagesChanged: string },
     itemId: string,
+    leaseGuard: LeaseGuard | undefined,
   ): Promise<{ items: T[] } | { error: ApplicationError }> {
     let page = 1
     let totalPages = 1
     const items: T[] = []
 
     do {
+      const leaseLost = this.refuseIfLeaseLost(itemId, leaseGuard)
+      if (leaseLost) {
+        return { error: leaseLost }
+      }
+
       const pageData = await readPage(page)
       if (pageData.page !== page) {
         this.gateway.logError('Página devolvida diferente da requisitada', { errorType: errorTypes.pageMismatch })
@@ -178,4 +210,19 @@ export class SyncPluggyPositionInteractor {
 
     return { items }
   }
+
+  // Invariante desta rodada: `renew() === false` no lease de ingestão que protege esta execução
+  // (D16) recusa nova página, nova chamada e novo commit destrutivo — nunca aborta trabalho já em
+  // voo, só impede o PRÓXIMO passo. Sem `leaseGuard` (chamador não detém lease), nunca recusa.
+  private refuseIfLeaseLost(itemId: string, leaseGuard: LeaseGuard | undefined): ApplicationError | undefined {
+    if (!leaseGuard?.isLost()) {
+      return undefined
+    }
+    this.gateway.logInfo('Lease de ingestão perdido, sincronização interrompida antes de novo passo', { itemId })
+    return new ApplicationError('PLUGGY_ITEM_INGESTION_LEASE_LOST', { itemId })
+  }
+}
+
+function notSynced() {
+  return { synced: false, positionsSynced: 0, loansSynced: 0 }
 }

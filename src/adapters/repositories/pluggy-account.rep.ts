@@ -1,5 +1,5 @@
 import { Decimal } from 'decimal.js'
-import type { Model, ModelStatic } from 'sequelize'
+import { Op, type Model, type ModelStatic } from 'sequelize'
 import type { AppContainer, GetTransaction } from '../../infra/bootstrap/register.js'
 import { DB_NAMES } from '../../infra/db/models.js'
 import { PluggyAccount } from '../../entities/pluggy-account.js'
@@ -103,6 +103,18 @@ export class PluggyAccountRep {
   async findByAccountId(accountId: string): Promise<PluggyAccount | undefined> {
     const row = await this.model.findOne({ where: { account_id: accountId } })
     return row ? toEntity(row.get({ plain: true })) : undefined
+  }
+
+  // Reconciliação de fotografia atual (design.md D21): toda conta local daquele Item cujo
+  // `accountId` não veio na leitura autoritativa atual deixa de pertencer à fotografia. Chamado só
+  // quando `ACCOUNTS` é `isUsable` nesta execução — nunca em fonte recusada. Mesma transação dos
+  // upserts (o chamador já abriu o processo).
+  async reconcile(itemId: string, presentAccountIds: string[]): Promise<number> {
+    const where: Record<string, unknown> = { item_id: itemId }
+    if (presentAccountIds.length > 0) {
+      where.account_id = { [Op.notIn]: presentAccountIds }
+    }
+    return this.model.destroy({ where, ...this.transactionOptions() })
   }
 
   async findByItemIds(itemIds: string[]): Promise<PluggyAccount[]> {

@@ -3,6 +3,9 @@ import { Decimal } from 'decimal.js'
 import SequelizeLib, { type Transaction } from 'sequelize'
 import { afterAll, afterEach, beforeAll, describe, expect, it } from 'vitest'
 import SyncPluggyPositionImpl from '../../../../src/adapters/gateways/pluggy-position/sync-pluggy-position.impl.js'
+import LoadPluggyHistoryImpl from '../../../../src/adapters/gateways/pluggy-history/load-pluggy-history.impl.js'
+import { PluggySyncProgressRep } from '../../../../src/adapters/repositories/pluggy-sync-progress.rep.js'
+import { definePluggySyncProgressModel } from '../../../../src/infra/db/models/pluggy-sync-progress-model.js'
 import { PluggyPositionRep } from '../../../../src/adapters/repositories/pluggy-position.rep.js'
 import { PluggyPositionSnapshotRep } from '../../../../src/adapters/repositories/pluggy-position-snapshot.rep.js'
 import { PluggyPositionRawRep } from '../../../../src/adapters/repositories/pluggy-position-raw.rep.js'
@@ -150,7 +153,7 @@ describe('SyncPluggyPositionImpl.savePositionsWithSnapshots', () => {
     itemIdsToCleanup.push(itemId)
 
     const impl = new SyncPluggyPositionImpl(buildContainer())
-    await impl.savePositionsWithSnapshots([investment(itemId, investmentId)], new Date())
+    await impl.savePositionsWithSnapshots(itemId, [investment(itemId, investmentId)], new Date())
 
     expect(await positionModel.count({ where: { item_id: itemId } })).toBe(1)
     expect(await snapshotModel.count({ where: { item_id: itemId } })).toBe(1)
@@ -170,7 +173,7 @@ describe('SyncPluggyPositionImpl.savePositionsWithSnapshots', () => {
       }),
     )
 
-    await expect(impl.savePositionsWithSnapshots([investment(itemId, investmentId)], new Date())).rejects.toBeInstanceOf(
+    await expect(impl.savePositionsWithSnapshots(itemId, [investment(itemId, investmentId)], new Date())).rejects.toBeInstanceOf(
       ApplicationError,
     )
 
@@ -188,11 +191,41 @@ describe('SyncPluggyPositionImpl.savePositionsWithSnapshots', () => {
     itemIdsToCleanup.push(itemId)
 
     const impl = new SyncPluggyPositionImpl(buildContainer())
-    await impl.savePositionsWithSnapshots([investment(itemId, investmentId)], new Date())
-    await impl.savePositionsWithSnapshots([investment(itemId, investmentId)], new Date())
+    await impl.savePositionsWithSnapshots(itemId, [investment(itemId, investmentId)], new Date())
+    await impl.savePositionsWithSnapshots(itemId, [investment(itemId, investmentId)], new Date())
 
     expect(await positionModel.count({ where: { item_id: itemId } })).toBe(1)
     expect(await positionRawModel.count({ where: { item_id: itemId } })).toBe(2)
+  })
+
+  it('leitura autoritativa reconcilia a fotografia atual: investimento ausente deixa de pertencer (D21)', async () => {
+    const itemId = randomUUID()
+    const investment1 = randomUUID()
+    const investment2 = randomUUID()
+    itemIdsToCleanup.push(itemId)
+
+    const impl = new SyncPluggyPositionImpl(buildContainer())
+    await impl.savePositionsWithSnapshots(itemId, [investment(itemId, investment1), investment(itemId, investment2)], new Date())
+    await impl.savePositionsWithSnapshots(itemId, [investment(itemId, investment1)], new Date())
+
+    expect(await positionModel.count({ where: { item_id: itemId } })).toBe(1)
+    const remaining = await positionModel.findAll({ where: { item_id: itemId } })
+    expect(remaining.map((r) => r.get('investment_id'))).toEqual([investment1])
+    // Snapshot nunca é reconciliado — é histórico. O snapshot de investment2 (gravado na primeira
+    // chamada) permanece intacto mesmo depois de investment2 sumir da fotografia atual.
+    expect(await snapshotModel.count({ where: { item_id: itemId, investment_id: investment2 } })).toBe(1)
+  })
+
+  it('lista vazia autoritativa reconcilia como portfólio vazio (D21)', async () => {
+    const itemId = randomUUID()
+    const investmentId = randomUUID()
+    itemIdsToCleanup.push(itemId)
+
+    const impl = new SyncPluggyPositionImpl(buildContainer())
+    await impl.savePositionsWithSnapshots(itemId, [investment(itemId, investmentId)], new Date())
+    await impl.savePositionsWithSnapshots(itemId, [], new Date())
+
+    expect(await positionModel.count({ where: { item_id: itemId } })).toBe(0)
   })
 })
 
@@ -314,7 +347,7 @@ describe('SyncPluggyPositionImpl.saveLoansWithSnapshots', () => {
     itemIdsToCleanup.push(itemId)
 
     const impl = new SyncPluggyPositionImpl(buildContainer())
-    await impl.saveLoansWithSnapshots([loan(itemId, loanId)], new Date())
+    await impl.saveLoansWithSnapshots(itemId, [loan(itemId, loanId)], new Date())
 
     expect(await loanModel.count({ where: { item_id: itemId } })).toBe(1)
     expect(await loanSnapshotModel.count({ where: { item_id: itemId } })).toBe(1)
@@ -334,13 +367,38 @@ describe('SyncPluggyPositionImpl.saveLoansWithSnapshots', () => {
       }),
     )
 
-    await expect(impl.saveLoansWithSnapshots([loan(itemId, loanId)], new Date())).rejects.toBeInstanceOf(
+    await expect(impl.saveLoansWithSnapshots(itemId, [loan(itemId, loanId)], new Date())).rejects.toBeInstanceOf(
       ApplicationError,
     )
 
     expect(await loanModel.count({ where: { item_id: itemId } })).toBe(0)
     expect(await loanSnapshotModel.count({ where: { item_id: itemId } })).toBe(0)
     expect(await loanRawModel.count({ where: { item_id: itemId } })).toBe(0)
+  })
+
+  it('leitura autoritativa reconcilia a fotografia atual: empréstimo ausente deixa de pertencer (D21)', async () => {
+    const itemId = randomUUID()
+    const loan1 = randomUUID()
+    const loan2 = randomUUID()
+    itemIdsToCleanup.push(itemId)
+
+    const impl = new SyncPluggyPositionImpl(buildContainer())
+    await impl.saveLoansWithSnapshots(itemId, [loan(itemId, loan1), loan(itemId, loan2)], new Date())
+    await impl.saveLoansWithSnapshots(itemId, [loan(itemId, loan1)], new Date())
+
+    expect(await loanModel.count({ where: { item_id: itemId } })).toBe(1)
+  })
+
+  it('lista vazia autoritativa reconcilia como dívida zerada (D21)', async () => {
+    const itemId = randomUUID()
+    const loanId = randomUUID()
+    itemIdsToCleanup.push(itemId)
+
+    const impl = new SyncPluggyPositionImpl(buildContainer())
+    await impl.saveLoansWithSnapshots(itemId, [loan(itemId, loanId)], new Date())
+    await impl.saveLoansWithSnapshots(itemId, [], new Date())
+
+    expect(await loanModel.count({ where: { item_id: itemId } })).toBe(0)
   })
 })
 
@@ -563,5 +621,65 @@ describe('SyncPluggyPositionImpl.saveSyncedItemState', () => {
 
     expect(await itemModel.count({ where: { item_id: itemId } })).toBe(0)
     expect(await itemRawModel.count({ where: { item_id: itemId } })).toBe(0)
+  })
+})
+
+// Requer MySQL alcançável: prova que `SyncPluggyPositionImpl` avança sob `consumer = POSITION_SYNC`
+// (design.md D4), e que isso NUNCA altera a marca d'água que `LoadPluggyHistoryImpl` (consumer
+// `HISTORY_LOAD`) mantém para a mesma fonte `INVESTMENTS` — tasks.md 4.7.
+describe('SyncPluggyPositionImpl.readSyncProgress / advanceSyncProgress', () => {
+  const sequelize = createDatabaseConnection(testDatabaseConfig())
+  const syncProgressModel = definePluggySyncProgressModel(sequelize)
+  const itemIdsToCleanup: string[] = []
+
+  afterEach(async () => {
+    const itemId = itemIdsToCleanup.pop()
+    if (itemId !== undefined) {
+      await syncProgressModel.destroy({ where: { item_id: itemId } })
+    }
+  })
+
+  afterAll(async () => {
+    await sequelize.close()
+  })
+
+  function buildContainer() {
+    const transactions = new Map<string, Transaction | null>()
+    const container = {
+      db: { Sequelize: SequelizeLib, connections: { [DB_NAMES.MAIN]: sequelize }, models: { pluggySyncProgress: syncProgressModel } },
+      logger: { addContext: () => {}, info: () => {}, warn: () => {}, error: () => {} },
+      getTransaction: (name: string) => transactions.get(name) ?? null,
+      setTransaction: (name: string, tx: Transaction | null) => {
+        transactions.set(name, tx)
+      },
+    } as unknown as AppContainer
+
+    const mutable = container as unknown as Record<string, unknown>
+    mutable.pluggySyncProgressRep = new PluggySyncProgressRep(container)
+    return container
+  }
+
+  it('advança e lê sempre sob o consumidor POSITION_SYNC', async () => {
+    const itemId = randomUUID()
+    itemIdsToCleanup.push(itemId)
+    const impl = new SyncPluggyPositionImpl(buildContainer())
+
+    await impl.advanceSyncProgress(itemId, 'INVESTMENTS', new Date('2026-08-01T00:00:00.000Z'))
+
+    await expect(impl.readSyncProgress(itemId, 'INVESTMENTS')).resolves.toEqual(new Date('2026-08-01T00:00:00.000Z'))
+    const row = await syncProgressModel.findOne({ where: { item_id: itemId } })
+    expect(row?.get('consumer')).toBe('POSITION_SYNC')
+    expect(row?.get('source')).toBe('INVESTMENTS')
+  })
+
+  it('avançar (POSITION_SYNC, INVESTMENTS) nunca altera (HISTORY_LOAD, INVESTMENTS) da mesma fonte', async () => {
+    const itemId = randomUUID()
+    itemIdsToCleanup.push(itemId)
+    const positionImpl = new SyncPluggyPositionImpl(buildContainer())
+    const historyImpl = new LoadPluggyHistoryImpl(buildContainer() as never)
+
+    await positionImpl.advanceSyncProgress(itemId, 'INVESTMENTS', new Date('2026-08-01T00:00:00.000Z'))
+
+    await expect(historyImpl.readSyncProgress(itemId, 'INVESTMENTS')).resolves.toBeUndefined()
   })
 })

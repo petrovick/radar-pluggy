@@ -2,6 +2,9 @@ import type { Decimal } from 'decimal.js'
 import type { ApplicationError } from '../../../shared/application-error.js'
 import type { DefaultGateway } from '../../default/default-gateway.js'
 import type { PluggyPositionMetadata } from '../../../entities/pluggy-position.js'
+import type { PluggyProductKey, PluggyProductStatus } from '../../../adapters/gateways/pluggy-items.gateway.js'
+import type { PluggySource } from '../../../adapters/gateways/pluggy-source-catalog.js'
+import type { LeaseGuard } from '../../../shared/lease-guard.js'
 
 // Contrato deste caso de uso (arquitetura-camadas, regra 2): entrada, saída e **uma** interface de
 // gateway, satisfeita por `adapters/gateways/pluggy-position/sync-pluggy-position.impl.ts`. Este
@@ -16,6 +19,12 @@ export interface CurrentItemState {
   status: string
   executionStatus: string
   lastUpdatedAt: string | undefined
+  // Campo obrigatório do SDK — fallback de versão quando `lastUpdatedAt` é `null` mesmo em `SUCCESS`
+  // (design.md D27).
+  updatedAt: string
+  // Produtos habilitados NESTE Item (D26) — `undefined` é `UNKNOWN`, nunca `[]`.
+  itemProducts: string[] | undefined
+  products: Partial<Record<PluggyProductKey, PluggyProductStatus>>
   // Payload bruto do item, capturado junto do registro principal (change
   // pluggy-complete-data-capture, spec pluggy-raw-payload-audit).
   raw: Record<string, unknown>
@@ -117,10 +126,6 @@ export interface PluggyLoansPage {
   totalPages: number
 }
 
-export interface LastSyncedItemState {
-  getLastUpdatedAt(): Date | undefined
-}
-
 // Estado do consentimento Open Finance por trás do item, no momento em que o portão de marca d'água
 // abriu. `NOT_FOUND` é a Pluggy nunca ter registrado consentimento algum para este item — distinto de
 // `REVOKED`/`EXPIRED`, que tiveram consentimento e o perderam.
@@ -151,27 +156,39 @@ export interface SyncPluggyPositionGateway extends DefaultGateway {
   // autentica e cacheia a api key sozinho) e o dono do item sai da credencial já vinculada, nunca de
   // inferência (design.md D7).
   readCurrentItemState(itemId: string): Promise<CurrentItemState>
-  readInvestmentsPage(itemId: string, page: number): Promise<PluggyInvestmentsPage>
-  readLastSyncedItemState(itemId: string): Promise<LastSyncedItemState | undefined>
-  // Verificado só quando o portão de marca d'água abre (fronteira-pluggy regra 6: nenhuma chamada
+
+  // Marca d'água por (`POSITION_SYNC`, fonte) — design.md D4. `consumer` é fixo neste gateway, nunca
+  // exposto ao caso de uso; nunca as mesmas linhas que `HISTORY_LOAD` usa para `INVESTMENTS`.
+  readSyncProgress(itemId: string, source: PluggySource): Promise<Date | undefined>
+  advanceSyncProgress(itemId: string, source: PluggySource, versionAt: Date): Promise<void>
+
+  // Verificado só quando alguma fonte está desatualizada (fronteira-pluggy regra 6: nenhuma chamada
   // nova sem mudança real). Consentimento revogado/expirado faz `GET /investments` devolver lista
-  // vazia (regra 3) — esta checagem nomeia a causa antes de gastar a paginação inteira num resultado
-  // que já se sabe vazio.
+  // vazia — esta checagem nomeia a causa antes de gastar a paginação inteira num resultado que já se
+  // sabe vazio.
   readConsentStatus(itemId: string): Promise<PluggyConsentStatus>
   saveConsentStatus(itemId: string, status: PluggyConsentStatus): Promise<void>
-  // Fotografia + snapshot histórico numa única unidade atômica (design.md D11). A transação vive
-  // dentro do impl: o caso de uso não sabe que ela existe, e por isso não há como "esquecer" de
-  // repassá-la — se qualquer linha falhar, nenhuma é gravada.
-  savePositionsWithSnapshots(investments: PluggyInvestmentInput[], syncedAt: Date): Promise<void>
-  // Lado passivo (empréstimo), mesmo portão e mesmo consentimento já verificados para investimentos —
-  // sem chamada própria de `fetchItem`/consentimento (design.md, sincronização de loans).
+
+  readInvestmentsPage(itemId: string, page: number): Promise<PluggyInvestmentsPage>
+  // Fotografia + snapshot histórico numa única unidade atômica (design.md D11), e reconciliação da
+  // fotografia atual (D21) — todo investimento local que não veio nesta leitura deixa de pertencer à
+  // fotografia. A transação vive dentro do impl: o caso de uso não sabe que ela existe.
+  savePositionsWithSnapshots(itemId: string, investments: PluggyInvestmentInput[], syncedAt: Date): Promise<void>
+
   readLoansPage(itemId: string, page: number): Promise<PluggyLoansPage>
-  saveLoansWithSnapshots(loans: PluggyLoanInput[], syncedAt: Date): Promise<void>
+  saveLoansWithSnapshots(itemId: string, loans: PluggyLoanInput[], syncedAt: Date): Promise<void>
+
+  // Preserva, sem reinterpretação, "última ingestão completa e bem-sucedida" (design.md D5) — só
+  // chamado pelo caso de uso quando `executionStatus === 'SUCCESS'`.
   saveSyncedItemState(input: SaveSyncedItemStateInput): Promise<void>
 }
 
 export type SyncPluggyPositionInput = {
   itemId: string
+  // Presente só quando o chamador detém um lease de ingestão com heartbeat (D16) — ausente nunca é
+  // tratado como perda: sem guard, o caso de uso roda como sempre rodou (design.md, invariante do
+  // PR de observabilidade).
+  leaseGuard?: LeaseGuard
 }
 
 export type SyncPluggyPositionResult = {

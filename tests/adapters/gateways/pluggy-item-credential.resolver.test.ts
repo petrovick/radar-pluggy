@@ -18,11 +18,13 @@ function buildResolver(options: {
 }) {
   const findCredentialIdByItemId = vi.fn().mockResolvedValue(options.credentialIdByItem)
   const findById = vi.fn().mockResolvedValue(options.credentialById)
+  const findByItemId = vi.fn().mockResolvedValue(undefined)
 
   const container = {
-    pluggyCredentialItemRep: { findCredentialIdByItemId },
+    pluggyCredentialItemRep: { findCredentialIdByItemId, findByItemId },
     pluggyCredentialRep: { findById },
     pluggyClientGateway: { clientFor: options.clientFor ?? vi.fn().mockReturnValue({ id: 'cliente-do-sdk' }) },
+    pluggyCallRecorder: { record: () => {} },
   } as unknown as AppContainer
 
   return { resolver: new PluggyItemCredentialResolver(container), findCredentialIdByItemId, findById }
@@ -86,7 +88,9 @@ describe('PluggyItemCredentialResolver', () => {
       clientFor: clientForCredential,
     })
 
-    await expect(resolver.clientFor('item-1')).resolves.toBe(clientDoItem)
+    // O cliente devolvido é instrumentado (design.md D3) — um Proxy em volta do cliente real, nunca
+    // a mesma referência, mas com o mesmo comportamento observável.
+    await expect(resolver.clientFor('item-1')).resolves.toEqual(clientDoItem)
     expect(clientForCredential).toHaveBeenCalledWith('client-1', 'segredo')
   })
 

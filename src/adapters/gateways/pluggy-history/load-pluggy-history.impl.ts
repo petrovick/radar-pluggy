@@ -2,11 +2,9 @@ import type { AppContainer } from '../../../infra/bootstrap/register.js'
 import type {
   CompletedScan,
   CurrentItemHistoryState,
-  HistoryProductState,
   HistorySource,
   LoadPluggyHistoryGateway,
   PersistedPage,
-  SourceObservation,
 } from '../../../interactors/pluggy-history/load/load-pluggy-history.types.js'
 import { ApplicationError } from '../../../shared/application-error.js'
 import DefaultInteractorGatewayImpl from '../default-gateway.impl.js'
@@ -14,31 +12,26 @@ import type { PluggyAccountsGateway } from '../pluggy-accounts.gateway.js'
 import type { PluggyAccountTransactionsGateway } from '../pluggy-account-transactions.gateway.js'
 import type { PluggyInvestmentsGateway } from '../pluggy-investments.gateway.js'
 import type { PluggyInvestmentTransactionsGateway } from '../pluggy-investment-transactions.gateway.js'
-import type { PluggyItemsGateway, PluggyProductStatus } from '../pluggy-items.gateway.js'
+import type { PluggyItemStateResolver } from '../pluggy-item-state.resolver.js'
 import type { PluggyItemCredentialResolver } from '../pluggy-item-credential.resolver.js'
+import type { PluggySource } from '../pluggy-source-catalog.js'
 import type { PluggyAccountRep } from '../../repositories/pluggy-account.rep.js'
 import type { PluggyAccountTransactionRep } from '../../repositories/pluggy-account-transaction.rep.js'
 import type { PluggyHistoryCoverageRep } from '../../repositories/pluggy-history-coverage.rep.js'
-import type { PluggyHistorySyncStateRep } from '../../repositories/pluggy-history-sync-state.rep.js'
+import type { PluggySyncProgressRep } from '../../repositories/pluggy-sync-progress.rep.js'
 import type { PluggyInvestmentTransactionRep } from '../../repositories/pluggy-investment-transaction.rep.js'
 import type { PluggyAccountRawRep } from '../../repositories/pluggy-account-raw.rep.js'
 import type { PluggyAccountTransactionRawRep } from '../../repositories/pluggy-account-transaction-raw.rep.js'
 import type { PluggyInvestmentTransactionRawRep } from '../../repositories/pluggy-investment-transaction-raw.rep.js'
 
-// Códigos de aviso da Pluggy que significam "não consegui coletar este produto porque o limite de
-// coletas do plano estourou". Traduzidos aqui, na borda, para o estado de domínio
-// `limitedByRateLimit` — o caso de uso decide o que fazer, sem conhecer código de fornecedor (D8).
-const RATE_LIMIT_WARNING_CODES = ['RATE_LIMIT', 'RATE_LIMIT_EXCEEDED', 'PRODUCT_RATE_LIMIT_EXCEEDED']
-
 // Gateway do caso de uso `load-pluggy-history`. Tudo que é mecanismo vive aqui: credencial, api key,
-// paginação por página e por cursor, transação e a tradução de aviso da Pluggy para estado de
-// domínio. Cada página é persistida ANTES de ser devolvida ao caso de uso (tasks.md 6.1).
-export default class LoadPluggyHistoryImpl
-  extends DefaultInteractorGatewayImpl
-  implements LoadPluggyHistoryGateway
-{
+// paginação por página e por cursor, transação. Cada página é persistida ANTES de ser devolvida ao
+// caso de uso (tasks.md 6.1). A decisão de negócio (elegibilidade por fonte, D4/D6/D13/D26) mora só
+// no interactor — este impl só traduz para o vocabulário de `PluggySyncProgressRep` (consumer fixo
+// `HISTORY_LOAD`) e para os gateways de borda.
+export default class LoadPluggyHistoryImpl extends DefaultInteractorGatewayImpl implements LoadPluggyHistoryGateway {
   private readonly pluggyItemCredentialResolver: PluggyItemCredentialResolver
-  private readonly pluggyItemsGateway: PluggyItemsGateway
+  private readonly pluggyItemStateResolver: PluggyItemStateResolver
   private readonly pluggyAccountsGateway: PluggyAccountsGateway
   private readonly pluggyAccountTransactionsGateway: PluggyAccountTransactionsGateway
   private readonly pluggyInvestmentsGateway: PluggyInvestmentsGateway
@@ -47,7 +40,7 @@ export default class LoadPluggyHistoryImpl
   private readonly pluggyAccountTransactionRep: PluggyAccountTransactionRep
   private readonly pluggyInvestmentTransactionRep: PluggyInvestmentTransactionRep
   private readonly pluggyHistoryCoverageRep: PluggyHistoryCoverageRep
-  private readonly pluggyHistorySyncStateRep: PluggyHistorySyncStateRep
+  private readonly pluggySyncProgressRep: PluggySyncProgressRep
   private readonly pluggyAccountRawRep: PluggyAccountRawRep
   private readonly pluggyAccountTransactionRawRep: PluggyAccountTransactionRawRep
   private readonly pluggyInvestmentTransactionRawRep: PluggyInvestmentTransactionRawRep
@@ -55,7 +48,7 @@ export default class LoadPluggyHistoryImpl
   constructor(params: AppContainer) {
     super(params)
     this.pluggyItemCredentialResolver = params.pluggyItemCredentialResolver
-    this.pluggyItemsGateway = params.pluggyItemsGateway
+    this.pluggyItemStateResolver = params.pluggyItemStateResolver
     this.pluggyAccountsGateway = params.pluggyAccountsGateway
     this.pluggyAccountTransactionsGateway = params.pluggyAccountTransactionsGateway
     this.pluggyInvestmentsGateway = params.pluggyInvestmentsGateway
@@ -64,29 +57,30 @@ export default class LoadPluggyHistoryImpl
     this.pluggyAccountTransactionRep = params.pluggyAccountTransactionRep
     this.pluggyInvestmentTransactionRep = params.pluggyInvestmentTransactionRep
     this.pluggyHistoryCoverageRep = params.pluggyHistoryCoverageRep
-    this.pluggyHistorySyncStateRep = params.pluggyHistorySyncStateRep
+    this.pluggySyncProgressRep = params.pluggySyncProgressRep
     this.pluggyAccountRawRep = params.pluggyAccountRawRep
     this.pluggyAccountTransactionRawRep = params.pluggyAccountTransactionRawRep
     this.pluggyInvestmentTransactionRawRep = params.pluggyInvestmentTransactionRawRep
   }
 
   async readCurrentItemState(itemId: string): Promise<CurrentItemHistoryState> {
-    const client = await this.pluggyItemCredentialResolver.clientFor(itemId)
-    const item = await this.pluggyItemsGateway.fetchItem(itemId, client)
+    const item = await this.pluggyItemStateResolver.read(itemId)
 
-    // Caixa depende de `accounts` + `transactions`; custódia, de `investments` +
-    // `investmentsTransactions`. Limite em qualquer metade limita aquela fonte.
     return {
       executionStatus: item.executionStatus,
       lastUpdatedAt: item.lastUpdatedAt,
-      cashProduct: toProductState([item.products.accounts, item.products.transactions]),
-      custodyProduct: toProductState([item.products.investments, item.products.investmentsTransactions]),
+      updatedAt: item.updatedAt,
+      itemProducts: item.itemProducts,
+      products: item.products,
     }
   }
 
-  async readLastSyncedHistoryWatermark(itemId: string): Promise<Date | undefined> {
-    const state = await this.pluggyHistorySyncStateRep.findByItemId(itemId)
-    return state?.getLastCompletedItemUpdatedAt()
+  readSyncProgress(itemId: string, source: PluggySource): Promise<Date | undefined> {
+    return this.pluggySyncProgressRep.read(itemId, 'HISTORY_LOAD', source)
+  }
+
+  advanceSyncProgress(itemId: string, source: PluggySource, versionAt: Date): Promise<void> {
+    return this.pluggySyncProgressRep.advance(itemId, 'HISTORY_LOAD', source, versionAt)
   }
 
   // Descobre e registra as contas de depósito e de cartão de crédito percorrendo a paginação
@@ -125,10 +119,6 @@ export default class LoadPluggyHistoryImpl
     return sources
   }
 
-  // `updatedAt` vem do próprio investimento (campo opcional do schema `Investment` da Pluggy) e é o
-  // que permite o portão incremental de custódia funcionar: sem ele, toda carga varria a custódia
-  // inteira de novo, contra o que a spec pluggy-transaction-history exige. Ausente continua
-  // `undefined`, o que mantém o fallback de varredura integral.
   async readCustodySources(itemId: string): Promise<HistorySource[]> {
     const client = await this.pluggyItemCredentialResolver.clientFor(itemId)
     const sources: HistorySource[] = []
@@ -146,13 +136,21 @@ export default class LoadPluggyHistoryImpl
     return sources
   }
 
-  async readSourceObservation(itemId: string, source: HistorySource): Promise<SourceObservation> {
-    const coverage = await this.pluggyHistoryCoverageRep.findByReference(itemId, source.kind, source.referenceId)
-    return { sourceUpdatedAt: coverage?.getSourceUpdatedAt() }
+  // Leitura autoritativa de contas reconcilia a fotografia atual (design.md D21) — todo registro
+  // local daquele Item cujo `accountId` não veio na leitura atual deixa de pertencer à fotografia.
+  async reconcileAccounts(itemId: string, presentAccountIds: string[]): Promise<void> {
+    await this.startProcess()
+    try {
+      await this.pluggyAccountRep.reconcile(itemId, presentAccountIds)
+      await this.terminateProcess()
+    } catch (err) {
+      await this.cancelProcess()
+      throw err
+    }
   }
 
   // Uma página persistida por iteração. O caso de uso acumula a observação e só grava a conclusão
-  // depois da última — falha no meio interrompe o gerador e a conclusão anterior fica intacta (D5).
+  // depois da última — falha no meio interrompe o gerador e a conclusão anterior fica intacta.
   async *scanSource(itemId: string, source: HistorySource): AsyncGenerator<PersistedPage> {
     const client = await this.pluggyItemCredentialResolver.clientFor(itemId)
 
@@ -175,8 +173,8 @@ export default class LoadPluggyHistoryImpl
 
         // Log bruto inserido junto do registro principal, na mesma transação, por transação (change
         // pluggy-complete-data-capture, spec pluggy-raw-payload-audit) — não muda a semântica
-        // existente de "cada página persistida antes do yield" (D5/D6), só garante que a linha
-        // principal e sua bruta nascem ou morrem juntas.
+        // existente de "cada página persistida antes do yield", só garante que a linha principal e
+        // sua bruta nascem ou morrem juntas.
         for (const transaction of page.results) {
           await this.startProcess()
           try {
@@ -241,23 +239,11 @@ export default class LoadPluggyHistoryImpl
     })
   }
 
-  async advanceHistoryWatermark(itemId: string, itemLastUpdatedAt: Date): Promise<void> {
-    await this.pluggyHistorySyncStateRep.save({ itemId, lastCompletedItemUpdatedAt: itemLastUpdatedAt })
-  }
-
   async assertItemAccess(itemId: string, personId: number): Promise<void> {
     const credential = await this.pluggyItemCredentialResolver.findCredentialFor(itemId)
     if (!credential || credential.getPersonId() !== personId) {
       throw new ApplicationError('PLUGGY_ITEM_UNAUTHORIZED', { itemId })
     }
-  }
-}
-
-function toProductState(products: (PluggyProductStatus | undefined)[]): HistoryProductState {
-  const warningCodes = products.flatMap((product) => product?.warnings.map((warning) => warning.code) ?? [])
-  return {
-    limitedByRateLimit: warningCodes.some((code) => RATE_LIMIT_WARNING_CODES.includes(code)),
-    warningCodes,
   }
 }
 

@@ -1,4 +1,4 @@
-import { randomBytes, randomUUID } from 'node:crypto'
+import { randomBytes, randomInt, randomUUID } from 'node:crypto'
 import { afterAll, afterEach, describe, expect, it } from 'vitest'
 import { definePluggyCredentialModel } from '../../../src/infra/db/models/pluggy-credential-model.js'
 import { PluggyCredentialRep } from '../../../src/adapters/repositories/pluggy-credential.rep.js'
@@ -77,14 +77,18 @@ describe('PluggyCredentialRep.create', () => {
   })
 
   it('findByPersonId devolve todas as credenciais da pessoa, e lista vazia sem nenhuma', async () => {
+    // personId sorteado, nunca fixo: um personId fixo colide com lixo deixado por uma execução
+    // anterior interrompida antes do afterEach (ex.: timeout), cuja credencial foi cifrada com uma
+    // chave de processo diferente e nunca mais decifra.
+    const personId = randomInt(1_000, 1_000_000_000)
     const firstClientId = randomUUID()
     const secondClientId = randomUUID()
     clientIdsToCleanup.push(firstClientId, secondClientId)
 
-    await repository.create({ personId: 42, clientId: firstClientId, clientSecret: 'segredo-1' })
-    await repository.create({ personId: 42, clientId: secondClientId, clientSecret: 'segredo-2' })
+    await repository.create({ personId, clientId: firstClientId, clientSecret: 'segredo-1' })
+    await repository.create({ personId, clientId: secondClientId, clientSecret: 'segredo-2' })
 
-    const found = await repository.findByPersonId(42)
+    const found = await repository.findByPersonId(personId)
     expect(found).toHaveLength(2)
 
     expect(await repository.findByPersonId(999_999_999)).toEqual([])

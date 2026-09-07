@@ -1,4 +1,5 @@
 import type { Response } from 'express'
+import type { AppContainerInstance } from '../../infra/bootstrap/register.js'
 import type { AuthenticatedRequest } from '../../infra/http/middleware/authenticate.middleware.js'
 import type { ScopedRequest } from '../../infra/http/middleware/request-scope.middleware.js'
 
@@ -17,47 +18,61 @@ interface RegisterPluggyCredentialBody {
 // `personId` nunca vem do corpo da requisição — vem de `req.personId`, resolvido pelo middleware
 // de autenticação (design.md D8) a partir do JWT. Rota só é alcançável depois desse middleware
 // (ver http-server.ts); `personId` sempre está definido aqui.
-export async function registerPluggyCredentialHandler(
-  req: AuthenticatedRequest & ScopedRequest,
-  res: Response,
-): Promise<void> {
-  try {
-    if (req.personId === undefined || req.container === undefined) {
-      // Nunca deveria acontecer com o middleware de autenticação e o de escopo na frente
-      // (http-server.ts) — recusa nomeada em vez de deixar `undefined` vazar pro interactor, que
-      // tipa `personId` como obrigatório.
-      res.status(500).json({ errorType: 'PLUGGY_CONNECTOR_UNEXPECTED_ERROR' })
-      return
-    }
+//
+// Cadastro dispara pré-carga de posição e histórico SEM bloquear o `201` (tasks.md 7.5, requisito
+// funcional do PR #12, preservado — a implementação nasce usando a coordenação de ingestão deste
+// change, D11): `preloadItem` é chamado só depois da resposta, mesma forma de fábrica de
+// `createPluggyWebhookHandler`/`createLoadPluggyHistoryHandler` (container raiz + callback injetado,
+// nunca `req.container` — aquele escopo é da requisição que já terminou).
+export function createRegisterPluggyCredentialHandler(
+  container: AppContainerInstance,
+  preloadItem: (container: AppContainerInstance, itemId: string) => void,
+) {
+  return async function registerPluggyCredentialHandler(
+    req: AuthenticatedRequest & ScopedRequest,
+    res: Response,
+  ): Promise<void> {
+    try {
+      if (req.personId === undefined || req.container === undefined) {
+        // Nunca deveria acontecer com o middleware de autenticação e o de escopo na frente
+        // (http-server.ts) — recusa nomeada em vez de deixar `undefined` vazar pro interactor, que
+        // tipa `personId` como obrigatório.
+        res.status(500).json({ errorType: 'PLUGGY_CONNECTOR_UNEXPECTED_ERROR' })
+        return
+      }
 
-    const body = req.body as RegisterPluggyCredentialBody
-    const interactor = req.container.resolve('registerPluggyCredentialInteractor')
-    const { data, error } = await interactor.execute({
-      personId: req.personId,
-      clientId: toStringOrEmpty(body.clientId),
-      clientSecret: toStringOrEmpty(body.clientSecret),
-      itemId: toStringOrEmpty(body.itemId),
-    })
+      const body = req.body as RegisterPluggyCredentialBody
+      const itemId = toStringOrEmpty(body.itemId)
+      const interactor = req.container.resolve('registerPluggyCredentialInteractor')
+      const { data, error } = await interactor.execute({
+        personId: req.personId,
+        clientId: toStringOrEmpty(body.clientId),
+        clientSecret: toStringOrEmpty(body.clientSecret),
+        itemId,
+      })
 
-    if (error) {
-      // `extras`, não `details`: contrato de erro que o oplab-radar-front já lê em
-      // http-client.ts (toApiError) para todo endpoint — pluggy-connector segue o mesmo
-      // formato, já que o front fala direto com este serviço (design.md D7).
-      res.status(400).json({ errorType: error.errorType, extras: error.details })
-      return
-    }
+      if (error) {
+        // `extras`, não `details`: contrato de erro que o oplab-radar-front já lê em
+        // http-client.ts (toApiError) para todo endpoint — pluggy-connector segue o mesmo
+        // formato, já que o front fala direto com este serviço (design.md D7).
+        res.status(400).json({ errorType: error.errorType, extras: error.details })
+        return
+      }
 
-    if (!data) {
-      // Sem `error` e sem `data` é estado que o interactor não produz. Recusa nomeada em vez de
-      // responder 201 com `{"id": undefined}`, que o front leria como cadastro bem-sucedido sem id.
+      if (!data) {
+        // Sem `error` e sem `data` é estado que o interactor não produz. Recusa nomeada em vez de
+        // responder 201 com `{"id": undefined}`, que o front leria como cadastro bem-sucedido sem id.
+        res.status(500).json({ errorType: 'PLUGGY_CREDENTIAL_REGISTRATION_FAILED' })
+        return
+      }
+
+      res.status(201).json({ id: data.credentialId })
+
+      preloadItem(container, itemId)
+    } catch {
+      // O interactor já traduz erro em `{error}`; cair aqui é falha do próprio wiring/resolução.
       res.status(500).json({ errorType: 'PLUGGY_CREDENTIAL_REGISTRATION_FAILED' })
-      return
     }
-
-    res.status(201).json({ id: data.credentialId })
-  } catch {
-    // O interactor já traduz erro em `{error}`; cair aqui é falha do próprio wiring/resolução.
-    res.status(500).json({ errorType: 'PLUGGY_CREDENTIAL_REGISTRATION_FAILED' })
   }
 }
 

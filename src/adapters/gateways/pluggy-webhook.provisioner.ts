@@ -4,6 +4,8 @@ import { ApplicationError } from '../../shared/application-error.js'
 import type { PluggyClientGateway, PluggyConnectorClient } from './pluggy-client.gateway.js'
 import type { PluggyWebhooksGateway } from './pluggy-webhooks.gateway.js'
 import type { PluggyCredentialRep } from '../repositories/pluggy-credential.rep.js'
+import type { PluggyCallRecorder } from './pluggy-call-recorder.js'
+import { instrumentPluggyClient } from './pluggy-call-instrumentation.js'
 
 // Nome do header que carrega o segredo de entrada. Fixo no serviço: é o que este serviço configura na
 // Pluggy e o que ele lê na notificação — os dois lados vêm daqui.
@@ -22,12 +24,14 @@ export class PluggyWebhookProvisioner {
   private readonly pluggyClientGateway: PluggyClientGateway
   private readonly pluggyWebhooksGateway: PluggyWebhooksGateway
   private readonly webhookUrl: string
+  private readonly pluggyCallRecorder: PluggyCallRecorder
 
   constructor(params: AppContainer) {
     this.pluggyCredentialRep = params.pluggyCredentialRep
     this.pluggyClientGateway = params.pluggyClientGateway
     this.pluggyWebhooksGateway = params.pluggyWebhooksGateway
     this.webhookUrl = params.webhookUrl
+    this.pluggyCallRecorder = params.pluggyCallRecorder
   }
 
   // Segredo novo a cada provisionamento: provisionar é também rotacionar. Quem já estava inscrito
@@ -43,7 +47,11 @@ export class PluggyWebhookProvisioner {
       throw new ApplicationError('PLUGGY_CREDENTIAL_NOT_FOUND', { credentialId })
     }
 
-    const client = this.pluggyClientGateway.clientFor(credential.getClientId(), credential.getClientSecret())
+    // `PluggyClientGateway.clientFor` direto, nunca `PluggyItemCredentialResolver` (design.md D23):
+    // configuração de plataforma é por credencial, não por item. `itemId`/`connectorId` nulos —
+    // `call_scope = PLATFORM_CONFIG` (D22).
+    const rawClient = this.pluggyClientGateway.clientFor(credential.getClientId(), credential.getClientSecret())
+    const client = instrumentPluggyClient(rawClient, { itemId: undefined, connectorId: undefined }, this.pluggyCallRecorder)
     const secret = randomBytes(SECRET_BYTES).toString('base64url')
     const existing = credential.getWebhook()
     const confirmedExisting = existing && (await this.confirmStillExists(existing.webhookId, client))

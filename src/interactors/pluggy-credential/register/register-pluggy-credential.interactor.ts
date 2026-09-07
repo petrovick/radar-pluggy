@@ -41,7 +41,7 @@ export class RegisterPluggyCredentialInteractor {
 
       await this.gateway.checkItemAvailable(input.itemId)
 
-      await this.gateway.validateItemAccess({
+      const { connector } = await this.gateway.validateItemAccess({
         clientId: input.clientId,
         clientSecret: input.clientSecret,
         itemId: input.itemId,
@@ -52,6 +52,7 @@ export class RegisterPluggyCredentialInteractor {
         clientId: input.clientId,
         clientSecret: input.clientSecret,
         itemId: input.itemId,
+        connector,
       })
 
       await this.gateway.provisionWebhook(credentialId)

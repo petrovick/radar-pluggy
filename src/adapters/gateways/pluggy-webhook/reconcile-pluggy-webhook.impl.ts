@@ -6,6 +6,7 @@ import type {
 import DefaultInteractorGatewayImpl from '../default-gateway.impl.js'
 import type { PluggyCredentialRep } from '../../repositories/pluggy-credential.rep.js'
 import type { PluggyWebhookProvisioner } from '../pluggy-webhook.provisioner.js'
+import { runWithCallContext } from '../../../infra/tools/call-context.js'
 
 // Gateway do caso de uso `reconcile-pluggy-webhook`. O mecanismo de provisionar (gerar segredo, criar
 // ou rotacionar na Pluggy, gravar) mora em `PluggyWebhookProvisioner` — colaborador compartilhado com
@@ -32,6 +33,8 @@ export default class ReconcilePluggyWebhookImpl
   }
 
   async provisionWebhook(credentialId: number): Promise<void> {
-    await this.pluggyWebhookProvisioner.provisionFor(credentialId)
+    // `trigger=WEBHOOK_RECONCILIATION` (design.md D23, tasks.md 8.8) — mesmo provisionador de
+    // `RegisterPluggyCredentialImpl`, trigger distinto porque o fluxo que o disparou é outro.
+    await runWithCallContext({ trigger: 'WEBHOOK_RECONCILIATION' }, () => this.pluggyWebhookProvisioner.provisionFor(credentialId))
   }
 }

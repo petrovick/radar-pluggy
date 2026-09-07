@@ -205,6 +205,25 @@ describe('PluggyLoanRep.save', () => {
     expect(row?.get('installments')).toBeNull()
   })
 
+  it('reconcile remove empréstimos ausentes da leitura autoritativa, preservando os presentes (D21)', async () => {
+    const itemId = randomUUID()
+    const loan1 = randomUUID()
+    const loan2 = randomUUID()
+
+    await repository.save(baseInput(loan1, itemId))
+    await repository.save(baseInput(loan2, itemId))
+
+    try {
+      const removed = await repository.reconcile(itemId, [loan1])
+      expect(removed).toBe(1)
+
+      const remaining = await model.findAll({ where: { item_id: itemId } })
+      expect(remaining.map((r) => r.get('loan_id'))).toEqual([loan1])
+    } finally {
+      await model.destroy({ where: { item_id: itemId } })
+    }
+  })
+
   it('recusa gravação sem productName antes de tocar o banco', async () => {
     await expect(
       repository.save({ ...baseInput(randomUUID(), 'item-x'), productName: '' }),

@@ -131,6 +131,34 @@ describe('PluggyAccountRep', () => {
     expect(acc2).toBeDefined()
   })
 
+  it('reconcile remove contas ausentes da leitura autoritativa atual, preservando as presentes (D21)', async () => {
+    const itemId = randomUUID()
+    const account1 = randomUUID()
+    const account2 = randomUUID()
+    itemIdsToCleanup.push(itemId)
+
+    await repository.save(baseInput(itemId, account1))
+    await repository.save(baseInput(itemId, account2))
+
+    const removed = await repository.reconcile(itemId, [account1])
+    expect(removed).toBe(1)
+
+    const accounts = await repository.findByItemId(itemId)
+    expect(accounts.map((a) => a.getAccountId())).toEqual([account1])
+  })
+
+  it('reconcile com lista vazia de presentes remove todas as contas do item (portfólio zerado)', async () => {
+    const itemId = randomUUID()
+    const account1 = randomUUID()
+    itemIdsToCleanup.push(itemId)
+
+    await repository.save(baseInput(itemId, account1))
+
+    const removed = await repository.reconcile(itemId, [])
+    expect(removed).toBe(1)
+    expect(await repository.findByItemId(itemId)).toHaveLength(0)
+  })
+
   it('recusa gravação sem campo obrigatório antes de tocar o banco', async () => {
     await expect(
       repository.save({ ...baseInput('item-x', ''), accountId: '' }),

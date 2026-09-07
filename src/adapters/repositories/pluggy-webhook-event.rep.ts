@@ -62,13 +62,20 @@ export class PluggyWebhookEventRep {
   // exige PROVAR posse: se o lease vencer com o worker ainda vivo e outro reivindicar o mesmo evento,
   // o token muda, e a escrita do worker atrasado não encontra linha para atualizar — em vez de os dois
   // sobrescreverem o estado um do outro em silêncio (achado do engenheiro-pluggy-connector).
-  async claimNextPending(now = new Date()): Promise<{ event: PluggyWebhookEvent; leaseToken: Date } | undefined> {
+  // `excludeItemIds` (tasks.md 7.4): itens que a MESMA passada de drenagem já determinou ocupados
+  // pelo lease de ingestão compartilhado (`PluggyItemIngestionLeaseRep`, D16) — sem isso, devolver um
+  // evento a `PENDING` por lease ocupado faria a próxima iteração reivindicar o MESMO evento de novo,
+  // girando no mesmo item preso em vez de seguir para um candidato de item diferente.
+  async claimNextPending(
+    now = new Date(),
+    excludeItemIds: string[] = [],
+  ): Promise<{ event: PluggyWebhookEvent; leaseToken: Date } | undefined> {
     const busyItems = await this.model.findAll({
       attributes: ['item_id'],
       where: { state: 'PROCESSING', lease_until: { [Op.gt]: now } },
       ...this.transactionOptions(),
     })
-    const busyItemIds = busyItems.map((row) => row.get('item_id'))
+    const busyItemIds = [...new Set([...busyItems.map((row) => row.get('item_id')), ...excludeItemIds])]
 
     const where: Record<string, unknown> = { state: 'PENDING' }
     if (busyItemIds.length > 0) {

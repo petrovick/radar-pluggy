@@ -2,6 +2,7 @@ import { Decimal } from 'decimal.js'
 import { describe, expect, it } from 'vitest'
 import { SyncPluggyPositionInteractor } from '../../../../src/interactors/pluggy-position/sync/sync-pluggy-position.interactor.js'
 import type {
+  CurrentItemState,
   PluggyConsentStatus,
   PluggyInvestmentInput,
   PluggyInvestmentsPage,
@@ -10,6 +11,7 @@ import type {
   SaveSyncedItemStateInput,
   SyncPluggyPositionGateway,
 } from '../../../../src/interactors/pluggy-position/sync/sync-pluggy-position.types.js'
+import type { PluggySource } from '../../../../src/adapters/gateways/pluggy-source-catalog.js'
 import type { AppContainer } from '../../../../src/infra/bootstrap/register.js'
 import { ApplicationError } from '../../../../src/shared/application-error.js'
 
@@ -18,6 +20,21 @@ import { ApplicationError } from '../../../../src/shared/application-error.js'
 // interactor do `oplab-radar-api`.
 
 const ITEM_ID = '00000000-0000-0000-0000-000000000001'
+const ITEM_UPDATED_AT = '2026-09-03T04:40:14.026Z'
+const ALL_PRODUCTS = ['INVESTMENTS', 'LOANS']
+
+function itemState(overrides: Partial<CurrentItemState> = {}): CurrentItemState {
+  return {
+    status: 'UPDATED',
+    executionStatus: 'SUCCESS',
+    lastUpdatedAt: ITEM_UPDATED_AT,
+    updatedAt: ITEM_UPDATED_AT,
+    itemProducts: ALL_PRODUCTS,
+    products: {},
+    raw: {},
+    ...overrides,
+  }
+}
 
 function investment(overrides: Partial<PluggyInvestmentInput> = {}): PluggyInvestmentInput {
   return {
@@ -116,6 +133,7 @@ type Calls = {
   loanPages: number[]
   savedLoans: PluggyLoanInput[][]
   savedLoansSyncedAt: Date[]
+  advanced: { source: PluggySource; versionAt: Date }[]
 }
 
 function buildGateway(overrides: Partial<SyncPluggyPositionGateway> = {}): {
@@ -131,6 +149,7 @@ function buildGateway(overrides: Partial<SyncPluggyPositionGateway> = {}): {
     loanPages: [],
     savedLoans: [],
     savedLoansSyncedAt: [],
+    advanced: [],
   }
 
   const gateway: SyncPluggyPositionGateway = {
@@ -138,12 +157,11 @@ function buildGateway(overrides: Partial<SyncPluggyPositionGateway> = {}): {
     logInfo: () => {},
     logWarn: () => {},
     logError: () => {},
-    readCurrentItemState: async () => ({
-      status: 'UPDATED',
-      executionStatus: 'SUCCESS',
-      lastUpdatedAt: '2026-09-03T04:40:14.026Z',
-      raw: {},
-    }),
+    readCurrentItemState: async () => itemState(),
+    readSyncProgress: async () => undefined,
+    advanceSyncProgress: async (_itemId, source, versionAt) => {
+      calls.advanced.push({ source, versionAt })
+    },
     readConsentStatus: async () => ({
       kind: 'ACTIVE',
       consentId: 'consent-1',
@@ -161,8 +179,7 @@ function buildGateway(overrides: Partial<SyncPluggyPositionGateway> = {}): {
       calls.investmentPages.push(requestedPage)
       return page([investment()], { page: requestedPage })
     },
-    readLastSyncedItemState: async () => undefined,
-    savePositionsWithSnapshots: async (investments, syncedAt) => {
+    savePositionsWithSnapshots: async (_itemId, investments, syncedAt) => {
       calls.saved.push(investments)
       calls.savedSyncedAt.push(syncedAt)
     },
@@ -170,7 +187,7 @@ function buildGateway(overrides: Partial<SyncPluggyPositionGateway> = {}): {
       calls.loanPages.push(requestedPage)
       return loansPage([loan()], { page: requestedPage })
     },
-    saveLoansWithSnapshots: async (loans, syncedAt) => {
+    saveLoansWithSnapshots: async (_itemId, loans, syncedAt) => {
       calls.savedLoans.push(loans)
       calls.savedLoansSyncedAt.push(syncedAt)
     },
@@ -197,13 +214,13 @@ describe('SyncPluggyPositionInteractor', () => {
     expect(calls.saved).toHaveLength(1)
     expect(calls.savedLoans).toHaveLength(1)
     expect(calls.itemStates).toHaveLength(1)
-    expect(calls.itemStates[0]?.lastUpdatedAt).toEqual(new Date('2026-09-03T04:40:14.026Z'))
+    expect(calls.itemStates[0]?.lastUpdatedAt).toEqual(new Date(ITEM_UPDATED_AT))
+    expect(calls.advanced.map((a) => a.source).sort()).toEqual(['INVESTMENTS', 'LOANS'])
   })
 
   it('item sem mudança não gera nenhuma chamada de investimentos, de empréstimo nem de consentimento', async () => {
-    const { gateway, calls } = buildGateway({
-      readLastSyncedItemState: async () => ({ getLastUpdatedAt: () => new Date('2026-09-03T04:40:14.026Z') }),
-    })
+    const upToDate = new Date(ITEM_UPDATED_AT)
+    const { gateway, calls } = buildGateway({ readSyncProgress: async () => upToDate })
 
     const result = await buildInteractor(gateway).execute({ itemId: ITEM_ID })
 
@@ -213,6 +230,38 @@ describe('SyncPluggyPositionInteractor', () => {
     expect(calls.consentStatuses).toEqual([])
     expect(calls.loanPages).toEqual([])
     expect(calls.savedLoans).toEqual([])
+  })
+
+  it('investimento recusado (PARTIAL_SUCCESS, isUpdated !== true) não impede empréstimo', async () => {
+    const { gateway, calls } = buildGateway({
+      readCurrentItemState: async () =>
+        itemState({
+          executionStatus: 'PARTIAL_SUCCESS',
+          products: {
+            investments: { isUpdated: false, lastUpdatedAt: undefined, warnings: [] },
+            loans: { isUpdated: true, lastUpdatedAt: ITEM_UPDATED_AT, warnings: [] },
+          },
+        }),
+    })
+
+    const result = await buildInteractor(gateway).execute({ itemId: ITEM_ID })
+
+    expect(result.data).toEqual({ synced: true, positionsSynced: 0, loansSynced: 1 })
+    expect(calls.investmentPages).toEqual([])
+    expect(calls.saved).toEqual([])
+    // PARTIAL_SUCCESS nunca avança radar_pluggy_items (D5/D8) mesmo com LOANS processado.
+    expect(calls.itemStates).toEqual([])
+  })
+
+  it('fonte não habilitada para o Item nunca é chamada (D26)', async () => {
+    const { gateway, calls } = buildGateway({
+      readCurrentItemState: async () => itemState({ itemProducts: ['LOANS'] }),
+    })
+
+    const result = await buildInteractor(gateway).execute({ itemId: ITEM_ID })
+
+    expect(calls.investmentPages).toEqual([])
+    expect(result.data).toEqual({ synced: true, positionsSynced: 0, loansSynced: 1 })
   })
 
   it('portão aberto persiste empréstimos junto com investimentos, com o mesmo syncedAt', async () => {
@@ -250,7 +299,7 @@ describe('SyncPluggyPositionInteractor', () => {
     expect(calls.savedLoans[0]).toHaveLength(2)
   })
 
-  it('lista de empréstimos vazia com portão aberto é legítima — nem todo item tem dívida', async () => {
+  it('lista de empréstimos vazia autoritativa é legítima — nem todo item tem dívida', async () => {
     const { gateway, calls } = buildGateway({
       readLoansPage: async () => loansPage([]),
     })
@@ -262,6 +311,18 @@ describe('SyncPluggyPositionInteractor', () => {
     expect(calls.savedLoans[0]).toEqual([])
   })
 
+  it('lista de investimentos vazia autoritativa é legítima (D21) — portfólio pode estar zerado', async () => {
+    const { gateway, calls } = buildGateway({
+      readInvestmentsPage: async () => page([]),
+    })
+
+    const result = await buildInteractor(gateway).execute({ itemId: ITEM_ID })
+
+    expect(result.error).toBeUndefined()
+    expect(result.data).toEqual({ synced: true, positionsSynced: 0, loansSynced: 1 })
+    expect(calls.saved[0]).toEqual([])
+  })
+
   it('página de empréstimo divergente da requisitada recusa sem persistir nada, nem investimento nem empréstimo', async () => {
     const { gateway, calls } = buildGateway({
       readLoansPage: async () => loansPage([loan()], { page: 9, totalPages: 2 }),
@@ -270,7 +331,6 @@ describe('SyncPluggyPositionInteractor', () => {
     const result = await buildInteractor(gateway).execute({ itemId: ITEM_ID })
 
     expect(result.error?.errorType).toBe('PLUGGY_LOANS_PAGE_MISMATCH')
-    expect(calls.saved).toEqual([])
     expect(calls.savedLoans).toEqual([])
     expect(calls.itemStates).toEqual([])
   })
@@ -287,7 +347,6 @@ describe('SyncPluggyPositionInteractor', () => {
     const result = await buildInteractor(gateway).execute({ itemId: ITEM_ID })
 
     expect(result.error?.errorType).toBe('PLUGGY_LOANS_TOTAL_PAGES_CHANGED')
-    expect(calls.saved).toEqual([])
     expect(calls.savedLoans).toEqual([])
     expect(calls.itemStates).toEqual([])
   })
@@ -350,9 +409,9 @@ describe('SyncPluggyPositionInteractor', () => {
     expect(calls.itemStates).toEqual([])
   })
 
-  it('executionStatus diferente de SUCCESS não sincroniza', async () => {
+  it('executionStatus fora de SUCCESS/PARTIAL_SUCCESS não sincroniza', async () => {
     const { gateway, calls } = buildGateway({
-      readCurrentItemState: async () => ({ status: 'UPDATING', executionStatus: 'PARTIAL_SUCCESS', lastUpdatedAt: undefined, raw: {} }),
+      readCurrentItemState: async () => itemState({ status: 'LOGIN_ERROR', executionStatus: 'ERROR', lastUpdatedAt: undefined }),
     })
 
     const result = await buildInteractor(gateway).execute({ itemId: ITEM_ID })
@@ -361,16 +420,16 @@ describe('SyncPluggyPositionInteractor', () => {
     expect(calls.investmentPages).toEqual([])
   })
 
-  it('SUCCESS sem lastUpdatedAt é recusa nomeada, não portão fechado em silêncio', async () => {
-    const { gateway } = buildGateway({
-      readCurrentItemState: async () => ({ status: 'UPDATED', executionStatus: 'SUCCESS', lastUpdatedAt: undefined, raw: {} }),
+  it('SUCCESS sem lastUpdatedAt usa Item.updatedAt como versão (D27), nunca recusa permanente', async () => {
+    const { gateway, calls } = buildGateway({
+      readCurrentItemState: async () => itemState({ lastUpdatedAt: undefined, updatedAt: '2026-08-01T00:00:00.000Z' }),
     })
 
     const result = await buildInteractor(gateway).execute({ itemId: ITEM_ID })
 
-    expect(result.data).toBeUndefined()
-    expect(result.error).toBeInstanceOf(ApplicationError)
-    expect(result.error?.errorType).toBe('PLUGGY_ITEM_SUCCESS_WITHOUT_LAST_UPDATED_AT')
+    expect(result.error).toBeUndefined()
+    expect(calls.itemStates[0]?.lastUpdatedAt).toEqual(new Date('2026-08-01T00:00:00.000Z'))
+    expect(calls.advanced.every((a) => a.versionAt.toISOString() === '2026-08-01T00:00:00.000Z')).toBe(true)
   })
 
   it('percorre todas as páginas e persiste a carteira inteira', async () => {
@@ -419,19 +478,7 @@ describe('SyncPluggyPositionInteractor', () => {
     expect(calls.itemStates).toEqual([])
   })
 
-  it('lista vazia com portão aberto é recusa nomeada, sem apagar posição existente', async () => {
-    const { gateway, calls } = buildGateway({
-      readInvestmentsPage: async () => page([]),
-    })
-
-    const result = await buildInteractor(gateway).execute({ itemId: ITEM_ID })
-
-    expect(result.error?.errorType).toBe('PLUGGY_INVESTMENTS_EMPTY_WITH_SUCCESS_STATUS')
-    expect(calls.saved).toEqual([])
-    expect(calls.itemStates).toEqual([])
-  })
-
-  it('falha ao persistir não avança a marca d’água', async () => {
+  it('falha ao persistir posição não avança a marca d’água, mas empréstimo já concluído permanece', async () => {
     const { gateway, calls } = buildGateway({
       savePositionsWithSnapshots: async () => {
         throw new ApplicationError('PLUGGY_POSITION_SNAPSHOT_WRITE_FAILED', { itemId: ITEM_ID })
@@ -442,6 +489,7 @@ describe('SyncPluggyPositionInteractor', () => {
 
     expect(result.error?.errorType).toBe('PLUGGY_POSITION_SNAPSHOT_WRITE_FAILED')
     expect(calls.itemStates).toEqual([])
+    expect(calls.advanced).toEqual([])
   })
 
   it('erro inesperado vira erro nomeado do caso de uso, nunca vaza o erro cru', async () => {
@@ -468,5 +516,70 @@ describe('SyncPluggyPositionInteractor', () => {
 
     expect(result.error).toBeInstanceOf(ApplicationError)
     expect(result.error?.errorType).toBe('PLUGGY_POSITION_SYNC_FAILED')
+  })
+
+  it('lease perdido antes de qualquer chamada recusa sem ler consentimento nem paginar', async () => {
+    const { gateway, calls } = buildGateway()
+
+    const result = await buildInteractor(gateway).execute({ itemId: ITEM_ID, leaseGuard: { isLost: () => true } })
+
+    expect(result.error?.errorType).toBe('PLUGGY_ITEM_INGESTION_LEASE_LOST')
+    expect(calls.consentStatuses).toEqual([])
+    expect(calls.investmentPages).toEqual([])
+    expect(calls.saved).toEqual([])
+  })
+
+  it('lease perdido no meio da varredura de investimentos interrompe antes da próxima página, sem persistir', async () => {
+    const { gateway, calls } = buildGateway({
+      readInvestmentsPage: async (_itemId, requestedPage) => {
+        calls.investmentPages.push(requestedPage)
+        return page([investment({ investmentId: `inv-${requestedPage}` })], {
+          page: requestedPage,
+          totalPages: 3,
+          total: 3,
+        })
+      },
+    })
+    let requested = 0
+    const leaseGuard = { isLost: () => requested >= 2 }
+    const originalReadPage = gateway.readInvestmentsPage.bind(gateway)
+    gateway.readInvestmentsPage = async (itemId, requestedPage) => {
+      requested++
+      return originalReadPage(itemId, requestedPage)
+    }
+
+    const result = await buildInteractor(gateway).execute({ itemId: ITEM_ID, leaseGuard })
+
+    expect(result.error?.errorType).toBe('PLUGGY_ITEM_INGESTION_LEASE_LOST')
+    // Páginas 1 e 2 já tinham sido pedidas antes da perda ser detectada; a 3ª nunca chega a ser pedida.
+    expect(calls.investmentPages).toEqual([1, 2])
+    expect(calls.saved).toEqual([])
+  })
+
+  it('lease perdido depois da varredura, antes de persistir, recusa sem gravar fotografia', async () => {
+    let lost = false
+    const { gateway, calls } = buildGateway({
+      readInvestmentsPage: async (_itemId, requestedPage) => {
+        lost = true
+        calls.investmentPages.push(requestedPage)
+        return page([investment()], { page: requestedPage })
+      },
+    })
+    const leaseGuard = { isLost: () => lost }
+
+    const result = await buildInteractor(gateway).execute({ itemId: ITEM_ID, leaseGuard })
+
+    expect(result.error?.errorType).toBe('PLUGGY_ITEM_INGESTION_LEASE_LOST')
+    expect(calls.saved).toEqual([])
+    expect(calls.advanced).toEqual([])
+  })
+
+  it('sem leaseGuard, comportamento é o de sempre — nunca recusa por posse', async () => {
+    const { gateway, calls } = buildGateway()
+
+    const result = await buildInteractor(gateway).execute({ itemId: ITEM_ID })
+
+    expect(result.error).toBeUndefined()
+    expect(calls.saved).toHaveLength(1)
   })
 })

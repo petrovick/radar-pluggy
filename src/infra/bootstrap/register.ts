@@ -4,6 +4,7 @@ import { getModels, type DB } from '../db/models.js'
 import type { Config } from '../config/config.js'
 import { createLogger, type Logger } from '../tools/log/logger.js'
 import { PluggyClientGateway } from '../../adapters/gateways/pluggy-client.gateway.js'
+import { PluggyCallRecorder } from '../../adapters/gateways/pluggy-call-recorder.js'
 import { PluggyItemsGateway } from '../../adapters/gateways/pluggy-items.gateway.js'
 import { PluggyInvestmentsGateway } from '../../adapters/gateways/pluggy-investments.gateway.js'
 import { PluggyLoansGateway } from '../../adapters/gateways/pluggy-loans.gateway.js'
@@ -23,8 +24,11 @@ import { PluggyAccountRep } from '../../adapters/repositories/pluggy-account.rep
 import { PluggyAccountTransactionRep } from '../../adapters/repositories/pluggy-account-transaction.rep.js'
 import { PluggyInvestmentTransactionRep } from '../../adapters/repositories/pluggy-investment-transaction.rep.js'
 import { PluggyHistoryCoverageRep } from '../../adapters/repositories/pluggy-history-coverage.rep.js'
-import { PluggyHistorySyncStateRep } from '../../adapters/repositories/pluggy-history-sync-state.rep.js'
+import { PluggySyncProgressRep } from '../../adapters/repositories/pluggy-sync-progress.rep.js'
 import { PluggyWebhookEventRep } from '../../adapters/repositories/pluggy-webhook-event.rep.js'
+import { PluggyItemIngestionLeaseRep } from '../../adapters/repositories/pluggy-item-ingestion-lease.rep.js'
+import { PluggyItemObservationRep } from '../../adapters/repositories/pluggy-item-observation.rep.js'
+import { PluggyItemStateResolver } from '../../adapters/gateways/pluggy-item-state.resolver.js'
 import { PluggyWebhooksGateway } from '../../adapters/gateways/pluggy-webhooks.gateway.js'
 import AcceptPluggyWebhookImpl from '../../adapters/gateways/pluggy-webhook/accept-pluggy-webhook.impl.js'
 import RegisterPluggyCredentialImpl from '../../adapters/gateways/pluggy-credential/register-pluggy-credential.impl.js'
@@ -105,6 +109,7 @@ export type AppContainer = {
 
   /** Gateway de borda (Pluggy) */
   pluggyClientGateway: PluggyClientGateway
+  pluggyCallRecorder: PluggyCallRecorder
   pluggyItemsGateway: PluggyItemsGateway
   pluggyInvestmentsGateway: PluggyInvestmentsGateway
   pluggyLoansGateway: PluggyLoansGateway
@@ -116,6 +121,7 @@ export type AppContainer = {
 
   /** Colaborador compartilhado entre impls (arquitetura-camadas, 2.3.1) */
   pluggyItemCredentialResolver: PluggyItemCredentialResolver
+  pluggyItemStateResolver: PluggyItemStateResolver
   pluggyPersonItemResolver: PluggyPersonItemResolver
   pluggyWebhookProvisioner: PluggyWebhookProvisioner
 
@@ -132,8 +138,10 @@ export type AppContainer = {
   pluggyAccountTransactionRep: PluggyAccountTransactionRep
   pluggyInvestmentTransactionRep: PluggyInvestmentTransactionRep
   pluggyHistoryCoverageRep: PluggyHistoryCoverageRep
-  pluggyHistorySyncStateRep: PluggyHistorySyncStateRep
+  pluggySyncProgressRep: PluggySyncProgressRep
   pluggyWebhookEventRep: PluggyWebhookEventRep
+  pluggyItemIngestionLeaseRep: PluggyItemIngestionLeaseRep
+  pluggyItemObservationRep: PluggyItemObservationRep
   pluggyConsentRep: PluggyConsentRep
   pluggyItemRawRep: PluggyItemRawRep
   pluggyConsentRawRep: PluggyConsentRawRep
@@ -168,7 +176,13 @@ export function setupContainer(config: Config): AppContainerInstance {
     // autenticado por parâmetro, nunca api key.
     // Singleton porque o cache de cliente (e, dentro dele, a api key do SDK) precisa sobreviver
     // ao escopo da unidade de trabalho — ver `pluggy-client.gateway.ts`.
-    pluggyClientGateway: asFunction(() => new PluggyClientGateway()).singleton(),
+    // Singleton de verdade (D31) — nunca `.scoped()`: precisa sobreviver a toda unidade de trabalho,
+    // igual ao cache de cliente de `PluggyClientGateway`. Resolvido ANTES de `pluggyClientGateway`
+    // porque este o injeta em todo cliente que constrói (D1).
+    pluggyCallRecorder: asClass(PluggyCallRecorder).singleton(),
+    pluggyClientGateway: asFunction(
+      ({ pluggyCallRecorder }: AppContainer) => new PluggyClientGateway({ pluggyCallRecorder }),
+    ).singleton(),
     pluggyItemsGateway: asClass(PluggyItemsGateway).singleton(),
     pluggyInvestmentsGateway: asClass(PluggyInvestmentsGateway).singleton(),
     pluggyLoansGateway: asClass(PluggyLoansGateway).singleton(),
@@ -177,6 +191,7 @@ export function setupContainer(config: Config): AppContainerInstance {
     pluggyAccountTransactionsGateway: asClass(PluggyAccountTransactionsGateway).singleton(),
     pluggyInvestmentTransactionsGateway: asClass(PluggyInvestmentTransactionsGateway).singleton(),
     pluggyItemCredentialResolver: asClass(PluggyItemCredentialResolver).scoped(),
+    pluggyItemStateResolver: asClass(PluggyItemStateResolver).scoped(),
     pluggyPersonItemResolver: asClass(PluggyPersonItemResolver).scoped(),
     pluggyWebhookProvisioner: asClass(PluggyWebhookProvisioner).scoped(),
     pluggyWebhooksGateway: asClass(PluggyWebhooksGateway).singleton(),
@@ -193,8 +208,10 @@ export function setupContainer(config: Config): AppContainerInstance {
     pluggyAccountTransactionRep: asClass(PluggyAccountTransactionRep).scoped(),
     pluggyInvestmentTransactionRep: asClass(PluggyInvestmentTransactionRep).scoped(),
     pluggyHistoryCoverageRep: asClass(PluggyHistoryCoverageRep).scoped(),
-    pluggyHistorySyncStateRep: asClass(PluggyHistorySyncStateRep).scoped(),
+    pluggySyncProgressRep: asClass(PluggySyncProgressRep).scoped(),
     pluggyWebhookEventRep: asClass(PluggyWebhookEventRep).scoped(),
+    pluggyItemIngestionLeaseRep: asClass(PluggyItemIngestionLeaseRep).scoped(),
+    pluggyItemObservationRep: asClass(PluggyItemObservationRep).scoped(),
     pluggyConsentRep: asClass(PluggyConsentRep).scoped(),
     pluggyItemRawRep: asClass(PluggyItemRawRep).scoped(),
     pluggyConsentRawRep: asClass(PluggyConsentRawRep).scoped(),

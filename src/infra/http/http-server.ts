@@ -1,5 +1,5 @@
 import express, { type Express, type NextFunction, type Request, type Response } from 'express'
-import { registerPluggyCredentialHandler } from '../../adapters/handlers/register-pluggy-credential.handler.js'
+import { createRegisterPluggyCredentialHandler } from '../../adapters/handlers/register-pluggy-credential.handler.js'
 import { checkPluggyCredentialHandler } from '../../adapters/handlers/check-pluggy-credential.handler.js'
 import { readPluggyPositionHandler } from '../../adapters/handlers/read-pluggy-position.handler.js'
 import { readPluggyAccountHandler } from '../../adapters/handlers/read-pluggy-account.handler.js'
@@ -13,6 +13,7 @@ import { reconcilePluggyWebhookHandler } from '../../adapters/handlers/reconcile
 import { checkHealthHandler } from '../../adapters/handlers/health.handler.js'
 import { drainInBackground } from '../worker/webhook-drainer.js'
 import { syncPluggyPositionInBackground } from '../worker/sync-pluggy-position-in-background.js'
+import { runPluggyItemIngestion } from '../worker/pluggy-item-ingestion.js'
 
 export interface HttpServerDependencies {
   jwtSecret: string
@@ -37,7 +38,18 @@ export function createHttpServer(deps: HttpServerDependencies): Express {
   // `healthcheck`.
   app.get('/healthcheck', checkHealthHandler)
 
-  app.post('/credentials', authenticate, registerPluggyCredentialHandler)
+  // Cadastro dispara pré-carga de posição e histórico sem bloquear o `201` (tasks.md 7.5) — mesma
+  // coordenação de ingestão do webhook (D16), trigger próprio para distinguir a origem em
+  // `radar_pluggy_calls`.
+  app.post(
+    '/credentials',
+    authenticate,
+    createRegisterPluggyCredentialHandler(deps.container, (container, itemId) => {
+      void runPluggyItemIngestion(container, itemId, 'CREDENTIAL_REGISTRATION_PRELOAD').catch((error: unknown) => {
+        container.resolve('logger').error('falha ao pré-carregar item após cadastro de credencial', { err: error, itemId })
+      })
+    }),
+  )
 
   // Estado de configuração da credencial (expor-status-credencial-pluggy) — front consulta para
   // decidir visibilidade de menus que dependem de credencial já cadastrada.
@@ -49,10 +61,16 @@ export function createHttpServer(deps: HttpServerDependencies): Express {
   app.post(
     '/items/:itemId/history/load',
     authenticate,
-    createLoadPluggyHistoryHandler(deps.container, (container, itemId) =>
-      syncPluggyPositionInBackground(container, itemId, (error) => {
-        container.resolve('logger').error('falha ao sincronizar posição após carga manual', { err: error, itemId })
-      }),
+    createLoadPluggyHistoryHandler(deps.container, (container, itemId, leaseGuard, onSettled) =>
+      syncPluggyPositionInBackground(
+        container,
+        itemId,
+        (error) => {
+          container.resolve('logger').error('falha ao sincronizar posição após carga manual', { err: error, itemId })
+        },
+        onSettled,
+        leaseGuard,
+      ),
     ),
   )
 
@@ -72,7 +90,7 @@ export function createHttpServer(deps: HttpServerDependencies): Express {
   app.post(
     '/webhooks/pluggy',
     createPluggyWebhookHandler(deps.container, (container) =>
-      drainInBackground(container, (error) => {
+      drainInBackground(container, 'WEBHOOK', (error) => {
         container.resolve('logger').error('falha ao drenar webhook', { err: error })
       }),
     ),
