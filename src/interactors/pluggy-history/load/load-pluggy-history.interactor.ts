@@ -2,6 +2,7 @@ import { ApplicationError } from '../../../shared/application-error.js'
 import { ObservedHistoryScan } from '../../../entities/pluggy-history-coverage.js'
 import { isEligible, isUsable, toVersionAt } from '../../../adapters/gateways/pluggy-source-state.js'
 import type { PluggySource } from '../../../adapters/gateways/pluggy-source-catalog.js'
+import type { PluggyAccountDto } from '../../../adapters/gateways/pluggy-accounts.gateway.js'
 import type { LeaseGuard } from '../../../shared/lease-guard.js'
 import type { AppContainer } from '../../../infra/bootstrap/register.js'
 import type {
@@ -78,10 +79,10 @@ export class LoadPluggyHistoryInteractor {
         'ACCOUNT_TRANSACTIONS',
         {
           discover: () => this.gateway.readCashSources(itemId, leaseGuard),
-          // Commit atômico (revisão do PR #14/D21): reconciliação e avanço da marca d'água juntos,
-          // protegidos pela mesma versão — nunca separados, para uma execução velha nunca regredir a
-          // fotografia de contas.
-          commitDiscovery: (ids, versionAt) => this.gateway.commitAccountsDiscovery(itemId, ids, versionAt),
+          // Commit atômico (revisão do review externo ao PR #14/D21): upsert de cada conta + payload
+          // bruto, reconciliação e avanço da marca d'água, todos protegidos pela mesma versão — nunca
+          // separados, para uma execução velha nunca sobrescrever nem regredir a fotografia de contas.
+          commitDiscovery: (sources, versionAt) => this.gateway.commitAccountsDiscovery(itemId, toDiscoveredAccounts(sources), versionAt),
         },
         leaseGuard,
       )
@@ -144,9 +145,11 @@ export class LoadPluggyHistoryInteractor {
     transactionSource: PluggySource,
     hooks: {
       discover: () => Promise<HistorySource[]>
-      // Commit atômico (reconciliação + avanço de versão, juntos) — quando ausente (custódia), a
-      // fonte de descoberta não tem fotografia própria a reconciliar, e o avanço simples basta.
-      commitDiscovery?: (presentIds: string[], versionAt: Date) => Promise<boolean>
+      // Commit atômico (upsert + reconciliação + avanço de versão, juntos) — quando ausente
+      // (custódia), a fonte de descoberta não tem fotografia própria a upsertar/reconciliar, e o
+      // avanço simples basta. Recebe os `HistorySource[]` inteiros (não só os ids): quem sabe extrair
+      // os dados de conta de dentro deles é o wrapper específico de CASH, não este método genérico.
+      commitDiscovery?: (sources: HistorySource[], versionAt: Date) => Promise<boolean>
     },
     leaseGuard: LeaseGuard | undefined,
   ): Promise<GroupResult> {
@@ -171,7 +174,7 @@ export class LoadPluggyHistoryInteractor {
     if (discovery.outdated && discovery.versionAt !== undefined) {
       this.ensureLeaseHeld(itemId, leaseGuard)
       if (hooks.commitDiscovery) {
-        const committed = await hooks.commitDiscovery(sources.map((source) => source.referenceId), discovery.versionAt)
+        const committed = await hooks.commitDiscovery(sources, discovery.versionAt)
         if (!committed) {
           this.gateway.logInfo('Versão mais nova já aplicada por outra execução, fotografia de contas não regride', {
             itemId,
@@ -235,4 +238,13 @@ export class LoadPluggyHistoryInteractor {
 
 function emptyResult() {
   return { loaded: false, sourcesScanned: 0, transactionsObserved: 0, sourcesRefused: [] }
+}
+
+// `HistorySource` é união discriminada por `kind` (revisão do review externo ao PR #14): `account`
+// é obrigatório na variante `ACCOUNT`, então o filtro abaixo já garante, pelo próprio tipo, que todo
+// elemento restante tem `.account` presente — sem checagem manual em runtime.
+function toDiscoveredAccounts(sources: HistorySource[]): PluggyAccountDto[] {
+  return sources
+    .filter((source): source is Extract<HistorySource, { kind: 'ACCOUNT' }> => source.kind === 'ACCOUNT')
+    .map((source) => source.account)
 }

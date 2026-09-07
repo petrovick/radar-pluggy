@@ -2,7 +2,7 @@ import { ApplicationError } from '../../../shared/application-error.js'
 import type { AppContainer } from '../../../infra/bootstrap/register.js'
 import { toConnectionStatus } from '../../../adapters/gateways/pluggy-connection-status.js'
 import { enabledForItem, toSourceState } from '../../../adapters/gateways/pluggy-source-state.js'
-import { productTypeFromSource, type PluggySource } from '../../../adapters/gateways/pluggy-source-catalog.js'
+import { discoveryProductTypesFor, type PluggySource } from '../../../adapters/gateways/pluggy-source-catalog.js'
 import type {
   CheckPluggyCredentialGateway,
   CheckPluggyCredentialInput,
@@ -89,8 +89,16 @@ function translateItem(item: LinkedItemView): CredentialStatusItem {
 // `enabledForItem`/`isUpdated`/`lastUpdatedAt` — não haveria o que significar. `enabledForItem`
 // omitido é `UNKNOWN` (D26, `itemProducts` nunca observado ou não determinado) — nunca inferido de
 // `supportedByConnector`. `isUpdated`/`lastUpdatedAt` só aparecem quando `enabledForItem === true`.
+//
+// `discoveryProductTypesFor` (revisão do review externo ao PR #14), nunca `productTypeFromSource`
+// sozinho: `ACCOUNTS` tem dois produtos de origem (`ACCOUNTS`, `CREDIT_CARDS`) — um connector com
+// `CREDIT_CARDS` habilitado mas sem `ACCOUNTS` continuava reportando `accounts.supportedByConnector
+// = false`, a mesma semântica já usada por `enabledForItem`/`isEligible` (D26), só que aqui aplicada
+// ao suporte do CONNECTOR, não à habilitação do ITEM.
 function translateSource(item: LinkedItemView, source: PluggySource): CredentialStatusSourceView {
-  const supportedByConnector = item.connectorProducts?.includes(productTypeFromSource(source)) ?? false
+  const connectorProducts = item.connectorProducts
+  const supportedByConnector =
+    connectorProducts !== undefined && discoveryProductTypesFor(source).some((product) => connectorProducts.includes(product))
   if (!supportedByConnector) {
     return { supportedByConnector: false }
   }

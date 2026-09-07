@@ -8,7 +8,7 @@ import type {
 } from '../../../interactors/pluggy-history/load/load-pluggy-history.types.js'
 import { ApplicationError } from '../../../shared/application-error.js'
 import DefaultInteractorGatewayImpl from '../default-gateway.impl.js'
-import type { PluggyAccountsGateway } from '../pluggy-accounts.gateway.js'
+import type { PluggyAccountDto, PluggyAccountsGateway } from '../pluggy-accounts.gateway.js'
 import type { PluggyAccountTransactionsGateway } from '../pluggy-account-transactions.gateway.js'
 import type { PluggyInvestmentsGateway } from '../pluggy-investments.gateway.js'
 import type { PluggyInvestmentTransactionsGateway } from '../pluggy-investment-transactions.gateway.js'
@@ -84,38 +84,39 @@ export default class LoadPluggyHistoryImpl extends DefaultInteractorGatewayImpl 
     await this.pluggySyncProgressRep.advance(itemId, 'HISTORY_LOAD', source, versionAt)
   }
 
-  // Descobre e registra as contas de depósito e de cartão de crédito percorrendo a paginação
-  // inteira, persistindo cada página na hora (change pluggy-complete-data-capture, spec
-  // pluggy-account: `CREDIT` deixou de ser ignorado — a fatura já é capturada pelo gateway de
-  // contas, só faltava não descartar a conta antes de registrá-la).
+  // Descobre as contas de depósito e de cartão de crédito percorrendo a paginação inteira — nunca
+  // persiste (revisão do review externo ao PR #14): só coleta o DTO de cada conta elegível
+  // (`BANK`/`CREDIT`), devolvido junto do `HistorySource` para `commitAccountsDiscovery` gravar,
+  // depois de vencer o gate de versão, na mesma transação do upsert (change
+  // pluggy-complete-data-capture, spec pluggy-account: `CREDIT` deixou de ser ignorado).
+  //
+  // `leaseGuard` checado ANTES de cada `iterator.next()` — inclusive o da primeira página — nunca
+  // depois: um `for await` chama `next()` do gerador interno antes de entrar no corpo do laço, então
+  // checar só ali dentro chegaria tarde demais para impedir a chamada de rede da PRÓXIMA página.
   async readCashSources(itemId: string, leaseGuard: LeaseGuard | undefined): Promise<HistorySource[]> {
     const client = await this.pluggyItemCredentialResolver.clientFor(itemId)
     const sources: HistorySource[] = []
+    const pages = this.pluggyAccountsGateway.fetchAccountPages(itemId, client)
 
-    for await (const page of this.pluggyAccountsGateway.fetchAccountPages(itemId, client)) {
-      this.ensureLeaseHeld(itemId, leaseGuard)
-      for (const account of page.results) {
-        if (account.type !== 'BANK' && account.type !== 'CREDIT') {
-          continue
+    try {
+      while (true) {
+        this.ensureLeaseHeld(itemId, leaseGuard)
+        const next = await pages.next()
+        if (next.done) {
+          break
         }
-        // Log bruto inserido junto do registro principal, na mesma transação (change
-        // pluggy-complete-data-capture, spec pluggy-raw-payload-audit).
-        await this.startProcess()
-        try {
-          await this.pluggyAccountRep.save(account)
-          await this.pluggyAccountRawRep.save({
-            itemId,
-            accountId: account.accountId,
-            rawPayload: account.raw,
-            capturedAt: new Date(),
-          })
-          await this.terminateProcess()
-        } catch (err) {
-          await this.cancelProcess()
-          throw err
+        for (const account of next.value.results) {
+          if (account.type !== 'BANK' && account.type !== 'CREDIT') {
+            continue
+          }
+          sources.push({ kind: 'ACCOUNT', referenceId: account.accountId, updatedAt: account.providerUpdatedAt, account })
         }
-        sources.push({ kind: 'ACCOUNT', referenceId: account.accountId, updatedAt: account.providerUpdatedAt })
       }
+    } finally {
+      // Substitui o `for await`, que chamaria `iterator.return()` automaticamente numa saída
+      // abrupta do laço (exceção) — o `while(true)` manual não o faz sozinho (revisão do review
+      // externo ao PR #14), então replicamos aqui para não regredir o cleanup do gerador interno.
+      await pages.return?.(undefined)
     }
 
     return sources
@@ -124,26 +125,38 @@ export default class LoadPluggyHistoryImpl extends DefaultInteractorGatewayImpl 
   async readCustodySources(itemId: string, leaseGuard: LeaseGuard | undefined): Promise<HistorySource[]> {
     const client = await this.pluggyItemCredentialResolver.clientFor(itemId)
     const sources: HistorySource[] = []
+    const pages = this.pluggyInvestmentsGateway.fetchInvestmentPages(itemId, client)
 
-    for await (const page of this.pluggyInvestmentsGateway.fetchInvestmentPages(itemId, client)) {
-      this.ensureLeaseHeld(itemId, leaseGuard)
-      for (const investment of page.results) {
-        sources.push({
-          kind: 'INVESTMENT',
-          referenceId: investment.investmentId,
-          updatedAt: investment.updatedAt,
-        })
+    try {
+      while (true) {
+        this.ensureLeaseHeld(itemId, leaseGuard)
+        const next = await pages.next()
+        if (next.done) {
+          break
+        }
+        for (const investment of next.value.results) {
+          sources.push({
+            kind: 'INVESTMENT',
+            referenceId: investment.investmentId,
+            updatedAt: investment.updatedAt,
+          })
+        }
       }
+    } finally {
+      await pages.return?.(undefined)
     }
 
     return sources
   }
 
-  // Commit atômico (revisão do PR #14): dentro de UMA transação, tenta avançar `pluggy_sync_progress`
-  // condicionalmente à versão e só reconcilia a fotografia atual (design.md D21) — todo registro
-  // local cujo `accountId` não veio na leitura atual — quando essa tentativa venceu a corrida. Uma
-  // execução velha cujo `advance` perde a corrida nunca chega a reconciliar (no-op completo).
-  async commitAccountsDiscovery(itemId: string, presentAccountIds: string[], versionAt: Date): Promise<boolean> {
+  // Commit atômico (revisão do review externo ao PR #14): dentro de UMA transação, tenta avançar
+  // `pluggy_sync_progress` condicionalmente à versão e só upserta cada conta (+ payload bruto) e
+  // reconcilia a fotografia atual (design.md D21) — todo registro local cujo `accountId` não veio na
+  // leitura atual — quando essa tentativa venceu a corrida. Uma execução velha cujo `advance` perde a
+  // corrida nunca chega a tocar a fotografia (nem upsert nem reconciliação): no-op completo. Fecha a
+  // brecha em que `readCashSources` gravava a conta ANTES do gate — um worker velho podia sobrescrever
+  // uma conta já atualizada por um worker novo antes de ter seu avanço de versão rejeitado.
+  async commitAccountsDiscovery(itemId: string, accounts: PluggyAccountDto[], versionAt: Date): Promise<boolean> {
     await this.startProcess()
     try {
       const won = await this.pluggySyncProgressRep.advance(itemId, 'HISTORY_LOAD', 'ACCOUNTS', versionAt)
@@ -151,7 +164,16 @@ export default class LoadPluggyHistoryImpl extends DefaultInteractorGatewayImpl 
         await this.terminateProcess()
         return false
       }
-      await this.pluggyAccountRep.reconcile(itemId, presentAccountIds)
+      for (const account of accounts) {
+        await this.pluggyAccountRep.save(account)
+        await this.pluggyAccountRawRep.save({
+          itemId,
+          accountId: account.accountId,
+          rawPayload: account.raw,
+          capturedAt: new Date(),
+        })
+      }
+      await this.pluggyAccountRep.reconcile(itemId, accounts.map((account) => account.accountId))
       await this.terminateProcess()
       return true
     } catch (err) {
@@ -162,41 +184,92 @@ export default class LoadPluggyHistoryImpl extends DefaultInteractorGatewayImpl 
 
   // Uma página persistida por iteração. O caso de uso acumula a observação e só grava a conclusão
   // depois da última — falha no meio interrompe o gerador e a conclusão anterior fica intacta.
-  // `leaseGuard` (revisão do PR #14): checado antes de processar cada página recebida, e portanto
-  // antes de o laço pedir a página seguinte ao gerador interno — perda de lease no meio da varredura
-  // nunca busca mais uma página.
+  // `leaseGuard` (revisão do review externo ao PR #14): checado antes de CADA `iterator.next()`,
+  // inclusive o da primeira página — nunca depois de já ter pedido a página ao gerador interno (mesmo
+  // raciocínio de `readCashSources`/`readCustodySources`: um `for await` chamaria `next()` antes de
+  // entrar no corpo do laço, checando tarde demais para impedir aquela chamada de rede).
   async *scanSource(itemId: string, source: HistorySource, leaseGuard: LeaseGuard | undefined): AsyncGenerator<PersistedPage> {
     const client = await this.pluggyItemCredentialResolver.clientFor(itemId)
 
     if (source.kind === 'ACCOUNT') {
-      for await (const page of this.pluggyAccountTransactionsGateway.fetchTransactionPages(
-        source.referenceId,
-        client,
-      )) {
-        this.ensureLeaseHeld(itemId, leaseGuard)
-        for (const transaction of page.results) {
-          // A Pluggy devolve `accountId` em cada lançamento: divergir da conta consultada é resposta
-          // trocada, recusa nomeada em vez de gravar lançamento na conta errada (tasks.md 6.2).
-          if (transaction.accountId !== source.referenceId) {
-            throw new ApplicationError('PLUGGY_TRANSACTION_ACCOUNT_MISMATCH', {
-              itemId,
-              expectedAccountId: source.referenceId,
-              receivedAccountId: transaction.accountId,
-            })
-          }
-        }
+      const pages = this.pluggyAccountTransactionsGateway.fetchTransactionPages(source.referenceId, client)
 
-        // Log bruto inserido junto do registro principal, na mesma transação, por transação (change
-        // pluggy-complete-data-capture, spec pluggy-raw-payload-audit) — não muda a semântica
-        // existente de "cada página persistida antes do yield", só garante que a linha principal e
-        // sua bruta nascem ou morrem juntas.
+      try {
+        while (true) {
+          this.ensureLeaseHeld(itemId, leaseGuard)
+          const next = await pages.next()
+          if (next.done) {
+            break
+          }
+          const page = next.value
+
+          for (const transaction of page.results) {
+            // A Pluggy devolve `accountId` em cada lançamento: divergir da conta consultada é
+            // resposta trocada, recusa nomeada em vez de gravar lançamento na conta errada
+            // (tasks.md 6.2).
+            if (transaction.accountId !== source.referenceId) {
+              throw new ApplicationError('PLUGGY_TRANSACTION_ACCOUNT_MISMATCH', {
+                itemId,
+                expectedAccountId: source.referenceId,
+                receivedAccountId: transaction.accountId,
+              })
+            }
+          }
+
+          // Log bruto inserido junto do registro principal, na mesma transação, por transação
+          // (change pluggy-complete-data-capture, spec pluggy-raw-payload-audit) — não muda a
+          // semântica existente de "cada página persistida antes do yield", só garante que a linha
+          // principal e sua bruta nascem ou morrem juntas.
+          for (const transaction of page.results) {
+            await this.startProcess()
+            try {
+              await this.pluggyAccountTransactionRep.save({ ...transaction, itemId })
+              await this.pluggyAccountTransactionRawRep.save({
+                itemId,
+                accountId: transaction.accountId,
+                transactionId: transaction.transactionId,
+                rawPayload: transaction.raw,
+                capturedAt: new Date(),
+              })
+              await this.terminateProcess()
+            } catch (err) {
+              await this.cancelProcess()
+              throw err
+            }
+          }
+          yield summarize(page.results.map((transaction) => transaction.date))
+        }
+      } finally {
+        // Substitui o `for await`, que chamaria `iterator.return()` automaticamente numa saída
+        // abrupta do laço (exceção) — o `while(true)` manual não o faz sozinho (revisão do review
+        // externo ao PR #14), então replicamos aqui para não regredir o cleanup do gerador interno.
+        await pages.return?.(undefined)
+      }
+      return
+    }
+
+    const pages = this.pluggyInvestmentTransactionsGateway.fetchTransactionPages(source.referenceId, client)
+
+    try {
+      while (true) {
+        this.ensureLeaseHeld(itemId, leaseGuard)
+        const next = await pages.next()
+        if (next.done) {
+          break
+        }
+        const page = next.value
+
         for (const transaction of page.results) {
           await this.startProcess()
           try {
-            await this.pluggyAccountTransactionRep.save({ ...transaction, itemId })
-            await this.pluggyAccountTransactionRawRep.save({
+            await this.pluggyInvestmentTransactionRep.save({
+              ...transaction,
               itemId,
-              accountId: transaction.accountId,
+              investmentId: source.referenceId,
+            })
+            await this.pluggyInvestmentTransactionRawRep.save({
+              itemId,
+              investmentId: source.referenceId,
               transactionId: transaction.transactionId,
               rawPayload: transaction.raw,
               capturedAt: new Date(),
@@ -209,36 +282,8 @@ export default class LoadPluggyHistoryImpl extends DefaultInteractorGatewayImpl 
         }
         yield summarize(page.results.map((transaction) => transaction.date))
       }
-      return
-    }
-
-    for await (const page of this.pluggyInvestmentTransactionsGateway.fetchTransactionPages(
-      source.referenceId,
-      client,
-    )) {
-      this.ensureLeaseHeld(itemId, leaseGuard)
-      for (const transaction of page.results) {
-        await this.startProcess()
-        try {
-          await this.pluggyInvestmentTransactionRep.save({
-            ...transaction,
-            itemId,
-            investmentId: source.referenceId,
-          })
-          await this.pluggyInvestmentTransactionRawRep.save({
-            itemId,
-            investmentId: source.referenceId,
-            transactionId: transaction.transactionId,
-            rawPayload: transaction.raw,
-            capturedAt: new Date(),
-          })
-          await this.terminateProcess()
-        } catch (err) {
-          await this.cancelProcess()
-          throw err
-        }
-      }
-      yield summarize(page.results.map((transaction) => transaction.date))
+    } finally {
+      await pages.return?.(undefined)
     }
   }
 

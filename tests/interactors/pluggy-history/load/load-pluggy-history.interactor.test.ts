@@ -1,3 +1,4 @@
+import { Decimal } from 'decimal.js'
 import { describe, expect, it } from 'vitest'
 import { LoadPluggyHistoryInteractor } from '../../../../src/interactors/pluggy-history/load/load-pluggy-history.interactor.js'
 import type {
@@ -8,6 +9,7 @@ import type {
   PersistedPage,
 } from '../../../../src/interactors/pluggy-history/load/load-pluggy-history.types.js'
 import type { PluggySource } from '../../../../src/adapters/gateways/pluggy-source-catalog.js'
+import type { PluggyAccountDto } from '../../../../src/adapters/gateways/pluggy-accounts.gateway.js'
 import type { AppContainer } from '../../../../src/infra/bootstrap/register.js'
 import { ApplicationError } from '../../../../src/shared/application-error.js'
 
@@ -17,10 +19,47 @@ const ITEM_UPDATED_AT = '2026-09-03T04:40:14.026Z'
 // vocabulário de domínio.
 const ALL_PRODUCTS = ['ACCOUNTS', 'TRANSACTIONS', 'INVESTMENTS', 'INVESTMENTS_TRANSACTIONS']
 
+// DTO mínimo (revisão do review externo ao PR #14): `readCashSources` sempre preenche `.account` em
+// todo `HistorySource` de contas — `toDiscoveredAccounts` (no interactor) lança se estiver ausente.
+function fakeAccountDto(accountId: string): PluggyAccountDto {
+  const now = new Date('2026-08-01T00:00:00.000Z')
+  return {
+    itemId: ITEM_ID,
+    accountId,
+    type: 'BANK',
+    subtype: undefined,
+    number: '1',
+    name: 'Conta',
+    marketingName: undefined,
+    balance: new Decimal('0'),
+    currencyCode: 'BRL',
+    owner: undefined,
+    providerCreatedAt: now,
+    providerUpdatedAt: now,
+    level: undefined,
+    brand: undefined,
+    brandAdditionalInfo: undefined,
+    balanceCloseDate: undefined,
+    balanceDueDate: undefined,
+    availableCreditLimit: undefined,
+    balanceForeignCurrency: undefined,
+    minimumPayment: undefined,
+    creditLimit: undefined,
+    isLimitFlexible: undefined,
+    status: undefined,
+    holderType: undefined,
+    taxNumber: undefined,
+    bankData: undefined,
+    disaggregatedCreditLimits: undefined,
+    raw: { id: accountId },
+  }
+}
+
 const account = (id = 'acc-1', updatedAt?: Date): HistorySource => ({
   kind: 'ACCOUNT',
   referenceId: id,
   updatedAt,
+  account: fakeAccountDto(id),
 })
 const investment = (id = 'inv-1', updatedAt?: Date): HistorySource => ({
   kind: 'INVESTMENT',
@@ -71,7 +110,7 @@ function buildGateway(overrides: Partial<LoadPluggyHistoryGateway> = {}): {
       calls.custodyDiscovered++
       return [investment()]
     },
-    commitAccountsDiscovery: async (_itemId, _presentIds, versionAt) => {
+    commitAccountsDiscovery: async (_itemId, _accounts, versionAt) => {
       calls.advanced.push({ source: 'ACCOUNTS', versionAt })
       return true
     },
@@ -255,12 +294,12 @@ describe('LoadPluggyHistoryInteractor', () => {
   })
 
   it('leitura autoritativa de contas reconcilia a fotografia atual só quando ACCOUNTS é utilizável', async () => {
-    let reconciledWith: string[] | undefined
+    let reconciledIds: string[] | undefined
     let reconciledVersion: Date | undefined
     const { gateway } = buildGateway({
       readCashSources: async () => [account('acc-1'), account('acc-2')],
-      commitAccountsDiscovery: async (_itemId, ids, versionAt) => {
-        reconciledWith = ids
+      commitAccountsDiscovery: async (_itemId, accounts, versionAt) => {
+        reconciledIds = accounts.map((a) => a.accountId)
         reconciledVersion = versionAt
         return true
       },
@@ -268,7 +307,7 @@ describe('LoadPluggyHistoryInteractor', () => {
 
     await buildInteractor(gateway).execute({ origin: 'INTERNAL_DRAINER', itemId: ITEM_ID })
 
-    expect(reconciledWith).toEqual(['acc-1', 'acc-2'])
+    expect(reconciledIds).toEqual(['acc-1', 'acc-2'])
     expect(reconciledVersion).toEqual(new Date(ITEM_UPDATED_AT))
   })
 

@@ -1,6 +1,7 @@
 import type { ApplicationError } from '../../../shared/application-error.js'
 import type { DefaultGateway } from '../../default/default-gateway.js'
 import type { PluggyProductKey, PluggyProductStatus } from '../../../adapters/gateways/pluggy-items.gateway.js'
+import type { PluggyAccountDto } from '../../../adapters/gateways/pluggy-accounts.gateway.js'
 import type { PluggySource } from '../../../adapters/gateways/pluggy-source-catalog.js'
 import type { LeaseGuard } from '../../../shared/lease-guard.js'
 
@@ -24,11 +25,14 @@ export interface CurrentItemHistoryState {
 // disponível, é só observabilidade (D14) — nunca decide se a fonte é varrida.
 export type HistorySourceKind = 'ACCOUNT' | 'INVESTMENT'
 
-export interface HistorySource {
-  kind: HistorySourceKind
-  referenceId: string
-  updatedAt: Date | undefined
-}
+// União discriminada por `kind` (revisão do review externo ao PR #14): `account` é OBRIGATÓRIO na
+// variante `ACCOUNT` — o compilador impede o estado inválido "fonte de conta sem os dados da conta",
+// em vez de uma checagem manual em runtime (CLAUDE.md, regra 6: obrigatoriedade se expressa no
+// tipo). Coletados durante a descoberta, nunca gravados por `readCashSources` — só
+// `commitAccountsDiscovery` toca `radar_pluggy_accounts`, e só depois de vencer o gate de versão.
+export type HistorySource =
+  | { kind: 'ACCOUNT'; referenceId: string; updatedAt: Date | undefined; account: PluggyAccountDto }
+  | { kind: 'INVESTMENT'; referenceId: string; updatedAt: Date | undefined }
 
 // Resultado de persistir UMA página de uma fonte. O impl grava a página antes de devolver isto — é o
 // que faz "persiste cada página imediatamente" (tasks.md 6.1) ser verdade.
@@ -56,18 +60,21 @@ export interface LoadPluggyHistoryGateway extends DefaultGateway {
   advanceSyncProgress(itemId: string, source: PluggySource, versionAt: Date): Promise<void>
 
   // Descobre TODAS as contas de depósito/investimentos atuais — sem filtrar por `updatedAt` do
-  // recurso (D14). Cada página é persistida (fotografia de conta) antes de devolvida. `leaseGuard`
-  // (revisão do PR #14): checado antes de cada página nova buscada durante a paginação — perda de
-  // lease no meio da descoberta nunca busca a página seguinte.
+  // recurso (D14). Nunca persiste (revisão do review externo ao PR #14): só coleta — quem grava a
+  // fotografia de conta é `commitAccountsDiscovery`, protegido pelo gate de versão. `leaseGuard`:
+  // checado antes de CADA página pedida durante a paginação, inclusive a primeira — perda de lease
+  // nunca busca mais uma página.
   readCashSources(itemId: string, leaseGuard: LeaseGuard | undefined): Promise<HistorySource[]>
   readCustodySources(itemId: string, leaseGuard: LeaseGuard | undefined): Promise<HistorySource[]>
 
-  // Commit atômico (revisão do PR #14): dentro de UMA transação, tenta avançar `pluggy_sync_progress`
-  // condicionalmente à versão e só reconcilia a fotografia atual (design.md D21) quando essa
-  // tentativa venceu a corrida — uma execução velha terminando depois de uma mais nova nunca regride
-  // a fotografia de contas. Só chamado quando `ACCOUNTS` é `isUsable` nesta execução. Devolve `false`
-  // quando perdeu a corrida (no-op).
-  commitAccountsDiscovery(itemId: string, presentAccountIds: string[], versionAt: Date): Promise<boolean>
+  // Commit atômico (revisão do review externo ao PR #14): dentro de UMA transação, tenta avançar
+  // `pluggy_sync_progress` condicionalmente à versão e só então upserta cada conta presente (+ seu
+  // payload bruto) e reconcilia a fotografia atual (design.md D21) — todo registro local cujo
+  // `accountId` não veio nesta leitura deixa de pertencer à fotografia. Uma execução velha cujo
+  // `advance` perde a corrida nunca toca a fotografia (nem upsert nem reconciliação): o commit
+  // inteiro é um no-op. Só chamado quando `ACCOUNTS` é `isUsable` nesta execução. Devolve `false`
+  // quando perdeu a corrida.
+  commitAccountsDiscovery(itemId: string, accounts: PluggyAccountDto[], versionAt: Date): Promise<boolean>
 
   // Varre uma fonte inteira, devolvendo cada página **depois** de persistida. Quem itera é o caso de
   // uso, que assim conclui a observação só após a última página. `leaseGuard`: checado antes de cada

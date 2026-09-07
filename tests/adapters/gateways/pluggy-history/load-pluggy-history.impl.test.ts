@@ -3,6 +3,7 @@ import { Decimal } from 'decimal.js'
 import SequelizeLib, { type Transaction } from 'sequelize'
 import { afterAll, afterEach, beforeAll, describe, expect, it } from 'vitest'
 import LoadPluggyHistoryImpl from '../../../../src/adapters/gateways/pluggy-history/load-pluggy-history.impl.js'
+import type { PluggyAccountDto } from '../../../../src/adapters/gateways/pluggy-accounts.gateway.js'
 import { PluggyAccountTransactionRep } from '../../../../src/adapters/repositories/pluggy-account-transaction.rep.js'
 import { PluggyAccountTransactionRawRep } from '../../../../src/adapters/repositories/pluggy-account-transaction-raw.rep.js'
 import { PluggyAccountRep } from '../../../../src/adapters/repositories/pluggy-account.rep.js'
@@ -28,6 +29,43 @@ import { ApplicationError } from '../../../../src/shared/application-error.js'
 // O cliente do SDK não é exercitado aqui: estes testes cobrem o impl, e o gateway de borda é
 // fingido logo abaixo. O stub existe só para o impl ter o que repassar.
 const fakeSdkClient = {} as never
+
+// `HistorySource` é união discriminada por `kind` (revisão do review externo ao PR #14): a variante
+// `ACCOUNT` exige `.account` presente — usado nos testes de `scanSource` que só precisam de um
+// `HistorySource` de conta válido, sem que o conteúdo do DTO importe para o cenário.
+function fakeAccountDto(accountId: string): PluggyAccountDto {
+  const now = new Date()
+  return {
+    itemId: 'item-fake',
+    accountId,
+    type: 'BANK',
+    subtype: undefined,
+    number: '1',
+    name: 'Conta',
+    marketingName: undefined,
+    balance: new Decimal('0'),
+    currencyCode: 'BRL',
+    owner: undefined,
+    providerCreatedAt: now,
+    providerUpdatedAt: now,
+    level: undefined,
+    brand: undefined,
+    brandAdditionalInfo: undefined,
+    balanceCloseDate: undefined,
+    balanceDueDate: undefined,
+    availableCreditLimit: undefined,
+    balanceForeignCurrency: undefined,
+    minimumPayment: undefined,
+    creditLimit: undefined,
+    isLimitFlexible: undefined,
+    status: undefined,
+    holderType: undefined,
+    taxNumber: undefined,
+    bankData: undefined,
+    disaggregatedCreditLimits: undefined,
+    raw: { id: accountId },
+  }
+}
 
 // Requer MySQL alcançável. O que este teste prova, e o teste do interactor não pode provar (ele usa
 // fake do gateway): que cada página é gravada ANTES de ser devolvida, e que `accountId` divergente
@@ -133,7 +171,7 @@ describe('LoadPluggyHistoryImpl.scanSource', () => {
     ])
 
     const observedPerPage: number[] = []
-    for await (const page of impl.scanSource(itemId, { kind: 'ACCOUNT', referenceId: accountId, updatedAt: undefined }, undefined)) {
+    for await (const page of impl.scanSource(itemId, { kind: 'ACCOUNT', referenceId: accountId, updatedAt: undefined, account: fakeAccountDto(accountId) }, undefined)) {
       observedPerPage.push(page.count)
       // Se a gravação acontecesse só no fim da varredura, esta contagem seria 0 na primeira volta.
       expect(await transactionModel.count({ where: { item_id: itemId } })).toBe(observedPerPage.length)
@@ -161,7 +199,7 @@ describe('LoadPluggyHistoryImpl.scanSource', () => {
       },
     )
 
-    const scan = impl.scanSource(itemId, { kind: 'ACCOUNT', referenceId: accountId, updatedAt: undefined }, undefined)
+    const scan = impl.scanSource(itemId, { kind: 'ACCOUNT', referenceId: accountId, updatedAt: undefined, account: fakeAccountDto(accountId) }, undefined)
     await expect(scan.next()).rejects.toBeInstanceOf(ApplicationError)
 
     expect(await transactionModel.count({ where: { item_id: itemId } })).toBe(0)
@@ -182,7 +220,7 @@ describe('LoadPluggyHistoryImpl.scanSource', () => {
     ])
 
     const observedPerPage: number[] = []
-    const scan = impl.scanSource(itemId, { kind: 'ACCOUNT', referenceId: accountId, updatedAt: undefined }, {
+    const scan = impl.scanSource(itemId, { kind: 'ACCOUNT', referenceId: accountId, updatedAt: undefined, account: fakeAccountDto(accountId) }, {
       isLost: () => true,
     })
 
@@ -198,6 +236,74 @@ describe('LoadPluggyHistoryImpl.scanSource', () => {
     expect(await transactionModel.count({ where: { item_id: itemId } })).toBe(0)
   })
 
+  // Revisão do review externo ao PR #14: o teste acima só prova "já perdido desde o início" — não
+  // prova a TRANSIÇÃO. Um `for await` chama `next()` do gerador interno antes de entrar no corpo do
+  // laço; se o guard fosse checado só ali dentro (depois do `next()`), a perda ocorrendo ENTRE a
+  // primeira página processada e o pedido da segunda ainda deixaria a segunda página ser buscada.
+  it('revisão do review externo ao PR #14: lease perdido só APÓS a primeira página nunca busca a segunda', async () => {
+    const itemId = randomUUID()
+    const accountId = randomUUID()
+    itemIdsToCleanup.push(itemId)
+    let secondPageRequested = false
+    let checks = 0
+    const transactions = new Map<string, Transaction | null>()
+
+    const container = {
+      db: {
+        Sequelize: SequelizeLib,
+        connections: { [DB_NAMES.MAIN]: sequelize },
+        models: {
+          pluggyAccountTransaction: transactionModel,
+          pluggyAccountTransactionRaw: transactionRawModel,
+          pluggyHistoryCoverage: coverageModel,
+        },
+      },
+      logger: { addContext: () => {}, info: () => {}, warn: () => {}, error: () => {} },
+      getTransaction: (name: string) => transactions.get(name) ?? null,
+      setTransaction: (name: string, tx: Transaction | null) => {
+        transactions.set(name, tx)
+      },
+      pluggyItemCredentialResolver: { clientFor: async () => fakeSdkClient, credentialFor: async () => undefined },
+      pluggyAccountTransactionsGateway: {
+        fetchTransactionPages: async function* () {
+          yield { results: [transactionDto(accountId, randomUUID())], next: '/v2/transactions?cursor=2' }
+          secondPageRequested = true
+          yield { results: [transactionDto(accountId, randomUUID())], next: null }
+        },
+      },
+    } as unknown as AppContainer
+
+    const mutable = container as unknown as Record<string, unknown>
+    mutable.pluggyAccountTransactionRep = new PluggyAccountTransactionRep(container)
+    mutable.pluggyAccountTransactionRawRep = new PluggyAccountTransactionRawRep(container)
+    mutable.pluggyHistoryCoverageRep = new PluggyHistoryCoverageRep(container)
+    const impl = new LoadPluggyHistoryImpl(container)
+
+    const leaseGuard = {
+      isLost: () => {
+        checks++
+        return checks > 1
+      },
+    }
+    const scan = impl.scanSource(itemId, { kind: 'ACCOUNT', referenceId: accountId, updatedAt: undefined, account: fakeAccountDto(accountId) }, leaseGuard)
+
+    const observedPerPage: number[] = []
+    await expect(
+      (async () => {
+        for await (const page of scan) {
+          observedPerPage.push(page.count)
+        }
+      })(),
+    ).rejects.toMatchObject({ errorType: 'PLUGGY_ITEM_INGESTION_LEASE_LOST' })
+
+    // A 1ª checagem (antes do 1º next()) devolve `false`: a página 1 é pedida, gravada e devolvida. A
+    // 2ª checagem (antes do 2º next()) devolve `true`: lança ANTES de o gerador interno ser resumido
+    // para produzir a página 2 — nunca uma segunda chamada de rede.
+    expect(observedPerPage).toEqual([1])
+    expect(secondPageRequested).toBe(false)
+    expect(await transactionModel.count({ where: { item_id: itemId } })).toBe(1)
+  })
+
   it('accountId divergente da conta consultada recusa antes de gravar', async () => {
     const itemId = randomUUID()
     const accountId = randomUUID()
@@ -205,7 +311,7 @@ describe('LoadPluggyHistoryImpl.scanSource', () => {
 
     const impl = buildImpl([{ results: [transactionDto('conta-errada', randomUUID())], next: null }])
 
-    const scan = impl.scanSource(itemId, { kind: 'ACCOUNT', referenceId: accountId, updatedAt: undefined }, undefined)
+    const scan = impl.scanSource(itemId, { kind: 'ACCOUNT', referenceId: accountId, updatedAt: undefined, account: fakeAccountDto(accountId) }, undefined)
     await expect(scan.next()).rejects.toBeInstanceOf(ApplicationError)
 
     expect(await transactionModel.count({ where: { item_id: itemId } })).toBe(0)
@@ -357,6 +463,93 @@ describe('LoadPluggyHistoryImpl.scanSource — transação de investimento', () 
     expect(await investmentTransactionModel.count({ where: { item_id: itemId } })).toBe(0)
     expect(await investmentTransactionRawModel.count({ where: { item_id: itemId } })).toBe(0)
   })
+
+  // Revisão do review externo ao PR #14: mesmo invariante do ramo ACCOUNT — perda de lease detectada
+  // ANTES de pedir a próxima página, nunca só depois de recebê-la.
+  it('revisão do review externo ao PR #14: lease já perdido nunca busca nenhuma página de transação de investimento', async () => {
+    const itemId = randomUUID()
+    const investmentId = randomUUID()
+    itemIdsToCleanup.push(itemId)
+
+    const impl = buildImpl([{ results: [investmentTransactionDto(randomUUID())], page: 1, total: 1, totalPages: 1 }])
+
+    const observed: number[] = []
+    await expect(
+      (async () => {
+        for await (const page of impl.scanSource(
+          itemId,
+          { kind: 'INVESTMENT', referenceId: investmentId, updatedAt: undefined },
+          { isLost: () => true },
+        )) {
+          observed.push(page.count)
+        }
+      })(),
+    ).rejects.toMatchObject({ errorType: 'PLUGGY_ITEM_INGESTION_LEASE_LOST' })
+
+    expect(observed).toEqual([])
+    expect(await investmentTransactionModel.count({ where: { item_id: itemId } })).toBe(0)
+  })
+
+  it('revisão do review externo ao PR #14: lease perdido só APÓS a primeira página nunca busca a segunda (transação de investimento)', async () => {
+    const itemId = randomUUID()
+    const investmentId = randomUUID()
+    itemIdsToCleanup.push(itemId)
+    let secondPageRequested = false
+    let checks = 0
+    const transactions = new Map<string, Transaction | null>()
+
+    const container = {
+      db: {
+        Sequelize: SequelizeLib,
+        connections: { [DB_NAMES.MAIN]: sequelize },
+        models: {
+          pluggyInvestmentTransaction: investmentTransactionModel,
+          pluggyInvestmentTransactionRaw: investmentTransactionRawModel,
+        },
+      },
+      logger: { addContext: () => {}, info: () => {}, warn: () => {}, error: () => {} },
+      getTransaction: (name: string) => transactions.get(name) ?? null,
+      setTransaction: (name: string, tx: Transaction | null) => {
+        transactions.set(name, tx)
+      },
+      pluggyItemCredentialResolver: { clientFor: async () => fakeSdkClient, credentialFor: async () => undefined },
+      pluggyInvestmentTransactionsGateway: {
+        fetchTransactionPages: async function* () {
+          yield { results: [investmentTransactionDto(randomUUID())], page: 1, total: 2, totalPages: 2 }
+          secondPageRequested = true
+          yield { results: [investmentTransactionDto(randomUUID())], page: 2, total: 2, totalPages: 2 }
+        },
+      },
+    } as unknown as AppContainer
+
+    const mutable = container as unknown as Record<string, unknown>
+    mutable.pluggyInvestmentTransactionRep = new PluggyInvestmentTransactionRep(container)
+    mutable.pluggyInvestmentTransactionRawRep = new PluggyInvestmentTransactionRawRep(container)
+    const impl = new LoadPluggyHistoryImpl(container)
+
+    const leaseGuard = {
+      isLost: () => {
+        checks++
+        return checks > 1
+      },
+    }
+    const observed: number[] = []
+    await expect(
+      (async () => {
+        for await (const page of impl.scanSource(
+          itemId,
+          { kind: 'INVESTMENT', referenceId: investmentId, updatedAt: undefined },
+          leaseGuard,
+        )) {
+          observed.push(page.count)
+        }
+      })(),
+    ).rejects.toMatchObject({ errorType: 'PLUGGY_ITEM_INGESTION_LEASE_LOST' })
+
+    expect(observed).toEqual([1])
+    expect(secondPageRequested).toBe(false)
+    expect(await investmentTransactionModel.count({ where: { item_id: itemId } })).toBe(1)
+  })
 })
 
 // Não toca banco: prova só a tradução de investimento da Pluggy para fonte de histórico, que é onde
@@ -422,43 +615,49 @@ describe('LoadPluggyHistoryImpl.readCustodySources', () => {
     })
     expect(secondPageRequested).toBe(false)
   })
+
+  // Revisão do review externo ao PR #14: o teste acima só prova "já perdido desde o início" — não
+  // prova a TRANSIÇÃO (lease válido na 1ª checagem, perdido só na 2ª).
+  it('revisão do review externo ao PR #14: lease perdido só APÓS a primeira página nunca busca a segunda (custódia)', async () => {
+    let secondPageRequested = false
+    let checks = 0
+    const container = {
+      db: { models: {} },
+      logger: { addContext: () => {}, info: () => {}, warn: () => {}, error: () => {} },
+      getTransaction: () => null,
+      setTransaction: () => {},
+      pluggyItemCredentialResolver: { clientFor: async () => fakeSdkClient },
+      pluggyInvestmentsGateway: {
+        fetchInvestmentPages: async function* () {
+          yield { results: [{ investmentId: 'inv-1', updatedAt: undefined }], page: 1, total: 2, totalPages: 2 }
+          secondPageRequested = true
+          yield { results: [{ investmentId: 'inv-2', updatedAt: undefined }], page: 2, total: 2, totalPages: 2 }
+        },
+      },
+    } as unknown as AppContainer
+    const impl = new LoadPluggyHistoryImpl(container)
+
+    const leaseGuard = {
+      isLost: () => {
+        checks++
+        return checks > 1
+      },
+    }
+    await expect(impl.readCustodySources('item-1', leaseGuard)).rejects.toMatchObject({
+      errorType: 'PLUGGY_ITEM_INGESTION_LEASE_LOST',
+    })
+    expect(secondPageRequested).toBe(false)
+  })
 })
 
 // Requer MySQL alcançável: o log bruto agora é inserido na mesma transação do registro principal
 // (change pluggy-complete-data-capture, spec pluggy-raw-payload-audit), então precisa de conexão
 // real — um fake de transação não provaria a atomicidade.
+// Não toca banco (revisão do review externo ao PR #14): `readCashSources` nunca persiste mais —
+// só coleta o DTO de cada conta elegível (BANK/CREDIT), devolvido junto do `HistorySource`. Quem
+// grava a fotografia de conta é só `commitAccountsDiscovery`, protegido pelo gate de versão — antes
+// desta correção, um worker velho ainda podia sobrescrever uma conta nova ANTES de perder a corrida.
 describe('LoadPluggyHistoryImpl.readCashSources', () => {
-  const sequelize = createDatabaseConnection(testDatabaseConfig())
-  const accountModel = definePluggyAccountModel(sequelize)
-  const accountRawModel = definePluggyAccountRawModel(sequelize)
-  const itemIdsToCleanup: string[] = []
-
-  beforeAll(async () => {
-    const queryInterface = sequelize.getQueryInterface()
-    const tables = await queryInterface.showAllTables()
-    if (!tables.includes('radar_pluggy_account_raw')) {
-      const { createRequire } = await import('node:module')
-      const require = createRequire(import.meta.url)
-      const { Sequelize } = await import('sequelize')
-      const migration = require('../../../../src/infra/db/migrations/20260906181300-criar-pluggy-connector-account-raw.cjs') as {
-        up: (queryInterface: unknown, sequelizeLib: typeof Sequelize) => Promise<void>
-      }
-      await migration.up(queryInterface, Sequelize)
-    }
-  })
-
-  afterEach(async () => {
-    const itemId = itemIdsToCleanup.pop()
-    if (itemId !== undefined) {
-      await accountModel.destroy({ where: { item_id: itemId } })
-      await accountRawModel.destroy({ where: { item_id: itemId } })
-    }
-  })
-
-  afterAll(async () => {
-    await sequelize.close()
-  })
-
   function accountDto(itemId: string, accountId: string, type: string, providerUpdatedAt: Date) {
     return {
       itemId,
@@ -475,20 +674,12 @@ describe('LoadPluggyHistoryImpl.readCashSources', () => {
     }
   }
 
-  function buildImpl(accounts: ReturnType<typeof accountDto>[], rawRepOverride?: { save: () => Promise<never> }) {
-    const transactions = new Map<string, Transaction | null>()
-
+  function buildImpl(accounts: ReturnType<typeof accountDto>[]) {
     const container = {
-      db: {
-        Sequelize: SequelizeLib,
-        connections: { [DB_NAMES.MAIN]: sequelize },
-        models: { pluggyAccount: accountModel, pluggyAccountRaw: accountRawModel },
-      },
+      db: { models: {} },
       logger: { addContext: () => {}, info: () => {}, warn: () => {}, error: () => {} },
-      getTransaction: (name: string) => transactions.get(name) ?? null,
-      setTransaction: (name: string, tx: Transaction | null) => {
-        transactions.set(name, tx)
-      },
+      getTransaction: () => null,
+      setTransaction: () => {},
       pluggyItemCredentialResolver: { clientFor: async () => fakeSdkClient },
       pluggyAccountsGateway: {
         fetchAccountPages: async function* () {
@@ -497,75 +688,53 @@ describe('LoadPluggyHistoryImpl.readCashSources', () => {
       },
     } as unknown as AppContainer
 
-    const mutable = container as unknown as Record<string, unknown>
-    mutable.pluggyAccountRep = new PluggyAccountRep(container)
-    mutable.pluggyAccountRawRep = rawRepOverride ?? new PluggyAccountRawRep(container)
-
     return new LoadPluggyHistoryImpl(container)
   }
 
-  it('conta BANK e conta CREDIT viram fonte de caixa e são salvas, com log bruto na mesma transação', async () => {
+  it('conta BANK e conta CREDIT viram fonte de caixa com o DTO completo anexado, sem persistir nada', async () => {
     const itemId = randomUUID()
-    itemIdsToCleanup.push(itemId)
     const providerUpdatedAt = new Date('2026-09-03T04:40:13.435Z')
+    const bank = accountDto(itemId, 'acc-bank', 'BANK', providerUpdatedAt)
+    const credit = accountDto(itemId, 'acc-credit', 'CREDIT', providerUpdatedAt)
 
-    const impl = buildImpl([
-      accountDto(itemId, 'acc-bank', 'BANK', providerUpdatedAt),
-      accountDto(itemId, 'acc-credit', 'CREDIT', providerUpdatedAt),
-    ])
-
+    const impl = buildImpl([bank, credit])
     const sources = await impl.readCashSources(itemId, undefined)
 
     expect(sources).toEqual([
-      { kind: 'ACCOUNT', referenceId: 'acc-bank', updatedAt: providerUpdatedAt },
-      { kind: 'ACCOUNT', referenceId: 'acc-credit', updatedAt: providerUpdatedAt },
+      { kind: 'ACCOUNT', referenceId: 'acc-bank', updatedAt: providerUpdatedAt, account: bank },
+      { kind: 'ACCOUNT', referenceId: 'acc-credit', updatedAt: providerUpdatedAt, account: credit },
     ])
-    expect(await accountModel.count({ where: { item_id: itemId } })).toBe(2)
-    expect(await accountRawModel.count({ where: { item_id: itemId } })).toBe(2)
   })
 
-  // Change pluggy-complete-data-capture, spec pluggy-raw-payload-audit: falha no log bruto desfaz
-  // o registro principal da mesma conta (mini-transação por conta).
-  it('falha ao gravar o log bruto desfaz a conta da mesma iteração', async () => {
+  it('conta de tipo não elegível (nem BANK nem CREDIT) é descartada', async () => {
     const itemId = randomUUID()
-    itemIdsToCleanup.push(itemId)
-    const providerUpdatedAt = new Date('2026-09-03T04:40:13.435Z')
+    const impl = buildImpl([accountDto(itemId, 'acc-other', 'INVESTMENT', new Date())])
 
-    const impl = buildImpl(
-      [accountDto(itemId, 'acc-bank', 'BANK', providerUpdatedAt)],
-      {
-        save: async () => {
-          throw new ApplicationError('PLUGGY_ACCOUNT_RAW_WRITE_FAILED', { itemId })
-        },
-      },
-    )
-
-    await expect(impl.readCashSources(itemId, undefined)).rejects.toBeInstanceOf(ApplicationError)
-
-    expect(await accountModel.count({ where: { item_id: itemId } })).toBe(0)
-    expect(await accountRawModel.count({ where: { item_id: itemId } })).toBe(0)
+    await expect(impl.readCashSources(itemId, undefined)).resolves.toEqual([])
   })
 
-  // Revisão do PR #14: mesmo motivo de `readCustodySources` — o guard precisa ser checado dentro do
-  // laço de paginação em si.
-  it('revisão PR #14: lease perdido no meio da paginação de contas nunca busca a próxima página', async () => {
+  // Revisão do review externo ao PR #14: mesmo motivo de `readCustodySources` — o guard precisa ser
+  // checado ANTES de cada `iterator.next()`, inclusive o da primeira página.
+  it('revisão do review externo ao PR #14: lease já perdido nunca busca nenhuma página de contas', async () => {
     const itemId = randomUUID()
-    itemIdsToCleanup.push(itemId)
+    const impl = buildImpl([accountDto(itemId, 'acc-1', 'BANK', new Date())])
+
+    await expect(impl.readCashSources(itemId, { isLost: () => true })).rejects.toMatchObject({
+      errorType: 'PLUGGY_ITEM_INGESTION_LEASE_LOST',
+    })
+  })
+
+  it('revisão do review externo ao PR #14: lease perdido só APÓS a primeira página nunca busca a segunda', async () => {
+    const itemId = randomUUID()
     const providerUpdatedAt = new Date('2026-09-03T04:40:13.435Z')
     let secondPageRequested = false
-    const transactions = new Map<string, Transaction | null>()
+    let checks = 0
 
     const container = {
-      db: {
-        Sequelize: SequelizeLib,
-        connections: { [DB_NAMES.MAIN]: sequelize },
-        models: { pluggyAccount: accountModel, pluggyAccountRaw: accountRawModel },
-      },
+      db: { models: {} },
       logger: { addContext: () => {}, info: () => {}, warn: () => {}, error: () => {} },
-      getTransaction: (name: string) => transactions.get(name) ?? null,
-      setTransaction: (name: string, tx: Transaction | null) => {
-        transactions.set(name, tx)
-      },
+      getTransaction: () => null,
+      setTransaction: () => {},
       pluggyItemCredentialResolver: { clientFor: async () => fakeSdkClient },
       pluggyAccountsGateway: {
         fetchAccountPages: async function* () {
@@ -575,19 +744,18 @@ describe('LoadPluggyHistoryImpl.readCashSources', () => {
         },
       },
     } as unknown as AppContainer
-
-    const mutable = container as unknown as Record<string, unknown>
-    mutable.pluggyAccountRep = new PluggyAccountRep(container)
-    mutable.pluggyAccountRawRep = new PluggyAccountRawRep(container)
     const impl = new LoadPluggyHistoryImpl(container)
 
-    // Perda já detectada desde a primeira checagem (logo após a 1ª página ser recebida, antes de
-    // processá-la) — o laço nunca chega a persistir a 1ª conta nem a pedir a 2ª página.
-    await expect(impl.readCashSources(itemId, { isLost: () => true })).rejects.toMatchObject({
+    const leaseGuard = {
+      isLost: () => {
+        checks++
+        return checks > 1
+      },
+    }
+    await expect(impl.readCashSources(itemId, leaseGuard)).rejects.toMatchObject({
       errorType: 'PLUGGY_ITEM_INGESTION_LEASE_LOST',
     })
     expect(secondPageRequested).toBe(false)
-    expect(await accountModel.count({ where: { item_id: itemId } })).toBe(0)
   })
 })
 
@@ -681,13 +849,29 @@ describe('LoadPluggyHistoryImpl.readSyncProgress / advanceSyncProgress', () => {
 describe('LoadPluggyHistoryImpl.commitAccountsDiscovery', () => {
   const sequelize = createDatabaseConnection(testDatabaseConfig())
   const accountModel = definePluggyAccountModel(sequelize)
+  const accountRawModel = definePluggyAccountRawModel(sequelize)
   const syncProgressModel = definePluggySyncProgressModel(sequelize)
   const itemIdsToCleanup: string[] = []
+
+  beforeAll(async () => {
+    const queryInterface = sequelize.getQueryInterface()
+    const tables = await queryInterface.showAllTables()
+    if (!tables.includes('radar_pluggy_account_raw')) {
+      const { createRequire } = await import('node:module')
+      const require = createRequire(import.meta.url)
+      const { Sequelize } = await import('sequelize')
+      const migration = require('../../../../src/infra/db/migrations/20260906181300-criar-pluggy-connector-account-raw.cjs') as {
+        up: (queryInterface: unknown, sequelizeLib: typeof Sequelize) => Promise<void>
+      }
+      await migration.up(queryInterface, Sequelize)
+    }
+  })
 
   afterEach(async () => {
     const itemId = itemIdsToCleanup.pop()
     if (itemId !== undefined) {
       await accountModel.destroy({ where: { item_id: itemId } })
+      await accountRawModel.destroy({ where: { item_id: itemId } })
       await syncProgressModel.destroy({ where: { item_id: itemId } })
     }
   })
@@ -696,13 +880,49 @@ describe('LoadPluggyHistoryImpl.commitAccountsDiscovery', () => {
     await sequelize.close()
   })
 
-  function buildImpl() {
+  // DTO completo (não só o id): revisão do review externo ao PR #14 — `commitAccountsDiscovery`
+  // agora upserta a conta inteira, não só reconcilia por id.
+  function accountDto(itemId: string, accountId: string, balance: string): PluggyAccountDto {
+    const now = new Date()
+    return {
+      itemId,
+      accountId,
+      type: 'BANK',
+      subtype: undefined,
+      number: '1',
+      name: 'Conta',
+      marketingName: undefined,
+      balance: new Decimal(balance),
+      currencyCode: 'BRL',
+      owner: undefined,
+      providerCreatedAt: now,
+      providerUpdatedAt: now,
+      level: undefined,
+      brand: undefined,
+      brandAdditionalInfo: undefined,
+      balanceCloseDate: undefined,
+      balanceDueDate: undefined,
+      availableCreditLimit: undefined,
+      balanceForeignCurrency: undefined,
+      minimumPayment: undefined,
+      creditLimit: undefined,
+      isLimitFlexible: undefined,
+      status: undefined,
+      holderType: undefined,
+      taxNumber: undefined,
+      bankData: undefined,
+      disaggregatedCreditLimits: undefined,
+      raw: { id: accountId, balance },
+    }
+  }
+
+  function buildImpl(rawRepOverride?: { save: () => Promise<never> }) {
     const transactions = new Map<string, Transaction | null>()
     const container = {
       db: {
         Sequelize: SequelizeLib,
         connections: { [DB_NAMES.MAIN]: sequelize },
-        models: { pluggyAccount: accountModel, pluggySyncProgress: syncProgressModel },
+        models: { pluggyAccount: accountModel, pluggyAccountRaw: accountRawModel, pluggySyncProgress: syncProgressModel },
       },
       logger: { addContext: () => {}, info: () => {}, warn: () => {}, error: () => {} },
       getTransaction: (name: string) => transactions.get(name) ?? null,
@@ -713,6 +933,7 @@ describe('LoadPluggyHistoryImpl.commitAccountsDiscovery', () => {
 
     const mutable = container as unknown as Record<string, unknown>
     mutable.pluggyAccountRep = new PluggyAccountRep(container)
+    mutable.pluggyAccountRawRep = rawRepOverride ?? new PluggyAccountRawRep(container)
     mutable.pluggySyncProgressRep = new PluggySyncProgressRep(container)
     return new LoadPluggyHistoryImpl(container)
   }
@@ -745,7 +966,42 @@ describe('LoadPluggyHistoryImpl.commitAccountsDiscovery', () => {
     expect(await accountModel.count({ where: { item_id: itemId } })).toBe(0)
   })
 
-  it('versão mais antiga chegando depois nunca regride a fotografia de contas (corrida de concorrência, revisão PR #14)', async () => {
+  // Revisão do review externo ao PR #14: prova que o upsert de conta + payload bruto agora acontece
+  // AQUI (não mais em `readCashSources`), só depois de vencer o gate de versão.
+  it('upserta cada conta presente e seu payload bruto, na mesma transação do avanço de versão', async () => {
+    const itemId = randomUUID()
+    itemIdsToCleanup.push(itemId)
+    const impl = buildImpl()
+    const account = accountDto(itemId, 'acc-1', '123.45')
+
+    await expect(impl.commitAccountsDiscovery(itemId, [account], new Date('2026-08-01T00:00:00.000Z'))).resolves.toBe(true)
+
+    const row = await accountModel.findOne({ where: { item_id: itemId, account_id: 'acc-1' } })
+    expect(row?.get('balance')).toBe('123.45')
+    expect(await accountRawModel.count({ where: { item_id: itemId, account_id: 'acc-1' } })).toBe(1)
+  })
+
+  // Change pluggy-complete-data-capture, spec pluggy-raw-payload-audit: falha no log bruto desfaz o
+  // upsert da conta da mesma iteração — agora dentro de `commitAccountsDiscovery`, não mais em
+  // `readCashSources` (revisão do review externo ao PR #14: `readCashSources` nunca mais persiste).
+  it('falha ao gravar o log bruto desfaz o upsert da conta da mesma iteração', async () => {
+    const itemId = randomUUID()
+    itemIdsToCleanup.push(itemId)
+    const impl = buildImpl({
+      save: async () => {
+        throw new ApplicationError('PLUGGY_ACCOUNT_RAW_WRITE_FAILED', { itemId })
+      },
+    })
+    const account = accountDto(itemId, 'acc-1', '123.45')
+
+    await expect(
+      impl.commitAccountsDiscovery(itemId, [account], new Date('2026-08-01T00:00:00.000Z')),
+    ).rejects.toBeInstanceOf(ApplicationError)
+
+    expect(await accountModel.count({ where: { item_id: itemId } })).toBe(0)
+  })
+
+  it('versão mais antiga chegando depois nunca regride a fotografia de contas (corrida de concorrência, revisão do review externo ao PR #14)', async () => {
     const itemId = randomUUID()
     itemIdsToCleanup.push(itemId)
     const impl = buildImpl()
@@ -754,7 +1010,7 @@ describe('LoadPluggyHistoryImpl.commitAccountsDiscovery', () => {
     const newerVersion = new Date('2026-08-10T00:00:00.000Z')
 
     // Worker "novo" reconcilia primeiro com a lista fresca (só acc-fresh presente).
-    const freshResult = await impl.commitAccountsDiscovery(itemId, ['acc-fresh'], newerVersion)
+    const freshResult = await impl.commitAccountsDiscovery(itemId, [accountDto(itemId, 'acc-fresh', '999.00')], newerVersion)
     // Worker "velho" tenta reconciliar depois com uma versão mais antiga e uma lista incompleta —
     // se isso vencesse, apagaria acc-fresh por não estar na lista velha.
     const staleResult = await impl.commitAccountsDiscovery(itemId, [], olderVersion)
@@ -765,6 +1021,30 @@ describe('LoadPluggyHistoryImpl.commitAccountsDiscovery', () => {
 
     const progress = await syncProgressModel.findOne({ where: { item_id: itemId, source: 'ACCOUNTS' } })
     expect(progress?.get('last_completed_version_at')).toEqual(newerVersion)
+  })
+
+  // Pedido explícito do review externo ao PR #14: prova que o upsert de uma execução VELHA nunca
+  // sobrescreve o VALOR já gravado por uma execução mais NOVA da MESMA conta — não só que a conta
+  // não é apagada (reconcile), mas que o próprio valor não regride. Antes desta correção,
+  // `readCashSources` fazia esse upsert ANTES do gate — um worker velho podia sobrescrever o saldo
+  // fresco antes de seu próprio `advance` ser rejeitado.
+  it('worker velho com Account X desatualizada nunca sobrescreve o valor já gravado pelo worker novo', async () => {
+    const itemId = randomUUID()
+    itemIdsToCleanup.push(itemId)
+    const impl = buildImpl()
+    const olderVersion = new Date('2026-08-01T00:00:00.000Z')
+    const newerVersion = new Date('2026-08-10T00:00:00.000Z')
+
+    // Worker "novo" grava Account X (V11) com o saldo atual.
+    const freshResult = await impl.commitAccountsDiscovery(itemId, [accountDto(itemId, 'acc-x', '500.00')], newerVersion)
+    // Worker "velho" (V10) chega depois com a MESMA conta, mas com um saldo desatualizado.
+    const staleResult = await impl.commitAccountsDiscovery(itemId, [accountDto(itemId, 'acc-x', '100.00')], olderVersion)
+
+    expect(freshResult).toBe(true)
+    expect(staleResult).toBe(false)
+
+    const row = await accountModel.findOne({ where: { item_id: itemId, account_id: 'acc-x' } })
+    expect(row?.get('balance')).toBe('500.00')
   })
 })
 

@@ -251,4 +251,46 @@ describe('CheckPluggyCredentialInteractor', () => {
     expect(data?.items[0]?.connectionStatus).toBe('UNKNOWN')
     expect(data?.items[0]?.sources.accounts).toEqual({ supportedByConnector: true })
   })
+
+  // Revisão do review externo ao PR #14: `ACCOUNTS` tem dois produtos de origem no SDK (`ACCOUNTS`,
+  // `CREDIT_CARDS`) — um connector habilitado só com `CREDIT_CARDS` (sem `ACCOUNTS`) ainda descobre
+  // conta de cartão via `GET /accounts`. Antes desta correção, `supportedByConnector` checava só
+  // `productTypeFromSource('ACCOUNTS') === 'ACCOUNTS'`, então esse connector reportava
+  // `accounts.supportedByConnector = false` mesmo descobrindo a conta de fato.
+  it('connector com CREDIT_CARDS + TRANSACTIONS, sem ACCOUNTS: accounts.supportedByConnector é true', async () => {
+    const gateway = buildGateway({
+      readLinkedItems: vi.fn().mockResolvedValue([
+        linkedItem({
+          connectorProducts: ['CREDIT_CARDS', 'TRANSACTIONS'],
+          observation: {
+            status: 'UPDATED',
+            executionStatus: 'SUCCESS',
+            statusDetail: undefined,
+            itemProducts: ['CREDIT_CARDS', 'TRANSACTIONS'],
+            lastUpdatedAt: '2026-09-03T00:00:00.000Z',
+            nextAutoSyncAt: undefined,
+          },
+        }),
+      ]),
+    })
+
+    const { data } = await buildInteractor(gateway).execute({ personId: 5 })
+
+    expect(data?.items[0]?.sources.accounts).toEqual({
+      supportedByConnector: true,
+      enabledForItem: true,
+      isUpdated: true,
+      lastUpdatedAt: '2026-09-03T00:00:00.000Z',
+    })
+  })
+
+  it('connector sem ACCOUNTS nem CREDIT_CARDS: accounts.supportedByConnector continua false', async () => {
+    const gateway = buildGateway({
+      readLinkedItems: vi.fn().mockResolvedValue([linkedItem({ connectorProducts: ['TRANSACTIONS'] })]),
+    })
+
+    const { data } = await buildInteractor(gateway).execute({ personId: 5 })
+
+    expect(data?.items[0]?.sources.accounts).toEqual({ supportedByConnector: false })
+  })
 })
