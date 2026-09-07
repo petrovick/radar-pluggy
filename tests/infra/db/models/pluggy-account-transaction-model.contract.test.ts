@@ -29,16 +29,16 @@ function createProxyQueryInterface(qi: QueryInterface, targetName: string, subst
   })
 }
 
-describe('contrato: model factory de pluggy_connector_account_transactions vs. migration real', () => {
+describe('contrato: model factory de radar_pluggy_account_transactions vs. migration real', () => {
   const sequelize = createDatabaseConnection(testDatabaseConfig())
   const queryInterface = sequelize.getQueryInterface()
 
   beforeAll(async () => {
     const tables = await queryInterface.showAllTables()
-    if (!tables.includes('pluggy_connector_account_transactions')) {
+    if (!tables.includes('radar_pluggy_account_transactions')) {
       await migration.up(queryInterface, Sequelize)
     }
-    const cols = await queryInterface.describeTable('pluggy_connector_account_transactions')
+    const cols = await queryInterface.describeTable('radar_pluggy_account_transactions')
     if (!cols.credit_card_metadata) {
       await fullCaptureMigration.up(queryInterface, Sequelize)
     }
@@ -49,14 +49,14 @@ describe('contrato: model factory de pluggy_connector_account_transactions vs. m
   })
 
   it('toda coluna da migration real tem uma coluna correspondente no model, e vice-versa', async () => {
-    const realColumns = await queryInterface.describeTable('pluggy_connector_account_transactions')
+    const realColumns = await queryInterface.describeTable('radar_pluggy_account_transactions')
     const model = definePluggyAccountTransactionModel(sequelize)
 
     expect(Object.keys(model.getAttributes()).sort()).toEqual(Object.keys(realColumns).sort())
   })
 
   it('allowNull do model bate com o allowNull real de cada coluna', async () => {
-    const realColumns = await queryInterface.describeTable('pluggy_connector_account_transactions')
+    const realColumns = await queryInterface.describeTable('radar_pluggy_account_transactions')
     const model = definePluggyAccountTransactionModel(sequelize)
     const attributes: Record<string, { allowNull?: boolean } | undefined> = model.getAttributes()
 

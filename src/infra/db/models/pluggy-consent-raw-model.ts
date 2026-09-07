@@ -21,7 +21,7 @@ export function definePluggyConsentRawModel(sequelize: Sequelize) {
       captured_at: { type: DataTypes.DATE(3), allowNull: false },
     },
     {
-      tableName: 'pluggy_connector_consent_raw',
+      tableName: 'radar_pluggy_consent_raw',
       timestamps: false,
     },
   )

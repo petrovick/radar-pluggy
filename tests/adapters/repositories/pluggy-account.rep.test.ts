@@ -20,7 +20,7 @@ describe('PluggyAccountRep', () => {
   beforeAll(async () => {
     const queryInterface = sequelize.getQueryInterface()
     const tables = await queryInterface.showAllTables()
-    if (!tables.includes('pluggy_connector_accounts')) {
+    if (!tables.includes('radar_pluggy_accounts')) {
       const { createRequire } = await import('node:module')
       const require = createRequire(import.meta.url)
       const { Sequelize } = await import('sequelize')
@@ -31,7 +31,7 @@ describe('PluggyAccountRep', () => {
     }
     // Banco limpo (CI do zero) só tem a tabela original: aplica a migration de crédito também,
     // mesmo padrão de `pluggy-position.rep.test.ts` para migration de criação + alteração posterior.
-    const cols = await queryInterface.describeTable('pluggy_connector_accounts')
+    const cols = await queryInterface.describeTable('radar_pluggy_accounts')
     if (!cols.level) {
       const { createRequire } = await import('node:module')
       const require = createRequire(import.meta.url)
@@ -41,7 +41,7 @@ describe('PluggyAccountRep', () => {
       }
       await creditMigration.up(queryInterface, Sequelize)
     }
-    const colsAfterCredit = await queryInterface.describeTable('pluggy_connector_accounts')
+    const colsAfterCredit = await queryInterface.describeTable('radar_pluggy_accounts')
     if (!colsAfterCredit.tax_number) {
       const { createRequire } = await import('node:module')
       const require = createRequire(import.meta.url)

@@ -1,6 +1,6 @@
 import { DataTypes, Model, type Sequelize } from 'sequelize'
 
-// Espelha, coluna a coluna, a migration de pluggy_connector_loan_snapshots — ver teste de contrato em
+// Espelha, coluna a coluna, a migration de radar_pluggy_loan_snapshots — ver teste de contrato em
 // tests/infra/db/models/pluggy-loan-snapshot-model.contract.test.ts.
 export interface PluggyLoanSnapshotRow {
   id: number
@@ -33,7 +33,7 @@ export function definePluggyLoanSnapshotModel(sequelize: Sequelize) {
       created_at: { type: DataTypes.DATE(3), allowNull: false },
     },
     {
-      tableName: 'pluggy_connector_loan_snapshots',
+      tableName: 'radar_pluggy_loan_snapshots',
       timestamps: false,
     },
   )

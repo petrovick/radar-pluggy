@@ -23,7 +23,7 @@ export class PluggyCredentialRep {
     this.credentialEncryptionKey = params.credentialEncryptionKey
   }
 
-  // Sem findOrCreate: diferente de pluggy_connector_items (dado reentregue pela Pluggy), esta tabela recebe
+  // Sem findOrCreate: diferente de radar_pluggy_items (dado reentregue pela Pluggy), esta tabela recebe
   // cadastro único vindo do cliente — duplicar client_id é erro do chamador, não reentrega esperada,
   // e a constraint de unicidade do banco já recusa (modelagem-de-dados).
   //

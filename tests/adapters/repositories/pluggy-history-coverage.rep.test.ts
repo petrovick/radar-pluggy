@@ -18,7 +18,7 @@ describe('PluggyHistoryCoverageRep', () => {
   beforeAll(async () => {
     const queryInterface = sequelize.getQueryInterface()
     const tables = await queryInterface.showAllTables()
-    if (!tables.includes('pluggy_connector_history_coverage')) {
+    if (!tables.includes('radar_pluggy_history_coverage')) {
       const { createRequire } = await import('node:module')
       const require = createRequire(import.meta.url)
       const { Sequelize } = await import('sequelize')

@@ -1,6 +1,6 @@
 import { DataTypes, Model, type Sequelize } from 'sequelize'
 
-// Espelha, coluna a coluna, a migration de pluggy_connector_loans — ver teste de contrato em
+// Espelha, coluna a coluna, a migration de radar_pluggy_loans — ver teste de contrato em
 // tests/infra/db/models/pluggy-loan-model.contract.test.ts. Atributos em snake_case, iguais à
 // coluna: a tradução para camelCase acontece só no repositório (modelagem-de-dados).
 export interface PluggyLoanRow {
@@ -82,7 +82,7 @@ export function definePluggyLoanModel(sequelize: Sequelize) {
       updated_at: { type: DataTypes.DATE(3), allowNull: false },
     },
     {
-      tableName: 'pluggy_connector_loans',
+      tableName: 'radar_pluggy_loans',
       timestamps: false,
     },
   )

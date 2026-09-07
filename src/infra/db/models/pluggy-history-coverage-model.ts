@@ -31,7 +31,7 @@ export function definePluggyHistoryCoverageModel(sequelize: Sequelize) {
       updated_at: { type: DataTypes.DATE(3), allowNull: false },
     },
     {
-      tableName: 'pluggy_connector_history_coverage',
+      tableName: 'radar_pluggy_history_coverage',
       timestamps: false,
     },
   )

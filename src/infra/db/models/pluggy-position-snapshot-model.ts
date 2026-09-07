@@ -37,7 +37,7 @@ export function definePluggyPositionSnapshotModel(sequelize: Sequelize) {
       created_at: { type: DataTypes.DATE(3), allowNull: false },
     },
     {
-      tableName: 'pluggy_connector_position_snapshots',
+      tableName: 'radar_pluggy_position_snapshots',
       timestamps: false,
     },
   )
