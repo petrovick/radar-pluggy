@@ -212,6 +212,29 @@ describe('PluggyAccountRep', () => {
     ])
   })
 
+  it('findByItemIds devolve as contas de todos os itens informados, e só deles', async () => {
+    const itemA = randomUUID()
+    const itemB = randomUUID()
+    const itemC = randomUUID()
+
+    try {
+      await repository.save(baseInput(itemA, randomUUID()))
+      await repository.save(baseInput(itemB, randomUUID()))
+      await repository.save(baseInput(itemC, randomUUID()))
+
+      const found = await repository.findByItemIds([itemA, itemB])
+
+      expect(found).toHaveLength(2)
+      expect(found.map((a) => a.getItemId()).sort()).toEqual([itemA, itemB].sort())
+    } finally {
+      await model.destroy({ where: { item_id: [itemA, itemB, itemC] } })
+    }
+  })
+
+  it('findByItemIds com lista vazia devolve lista vazia, sem consultar o banco', async () => {
+    await expect(repository.findByItemIds([])).resolves.toEqual([])
+  })
+
   it('conta sem taxNumber/bankData/disaggregatedCreditLimits grava e recupera com os três indefinidos', async () => {
     const itemId = randomUUID()
     const accountId = randomUUID()
