@@ -4,6 +4,7 @@ import { afterEach, describe, expect, it } from 'vitest'
 import { createHttpServer } from '../../../src/infra/http/http-server.js'
 import type { AppContainerInstance } from '../../../src/infra/bootstrap/register.js'
 import type { RegisterPluggyCredentialOutput } from '../../../src/interactors/pluggy-credential/register/register-pluggy-credential.types.js'
+import type { CheckPluggyCredentialOutput } from '../../../src/interactors/pluggy-credential/check/check-pluggy-credential.types.js'
 import type { CheckHealthOutput } from '../../../src/interactors/health/check/check-health.types.js'
 import { ApplicationError } from '../../../src/shared/application-error.js'
 
@@ -41,6 +42,7 @@ describe('createHttpServer', () => {
     personId?: number | undefined
     register?: () => Promise<RegisterPluggyCredentialOutput>
     checkHealth?: () => Promise<CheckHealthOutput>
+    checkCredential?: () => Promise<CheckPluggyCredentialOutput>
   }): AppContainerInstance {
     const registrations: Record<string, unknown> = {
       logger: { addContext: () => {}, info: () => {}, warn: () => {}, error: () => {} },
@@ -49,6 +51,7 @@ describe('createHttpServer', () => {
         execute: options.register ?? (async () => ({ data: { credentialId: 9 } })),
       },
       checkHealthInteractor: { execute: options.checkHealth ?? (async () => ({ data: { running: true } })) },
+      checkPluggyCredentialInteractor: { execute: options.checkCredential ?? (async () => ({ data: {} })) },
     }
     const scope = {
       register: () => {},
@@ -158,5 +161,51 @@ describe('createHttpServer', () => {
     expect(body).not.toContain('SyntaxError')
     expect(body).not.toContain('node_modules')
     expect(JSON.parse(body)).toEqual({ errorType: 'PLUGGY_CONNECTOR_MALFORMED_JSON' })
+  })
+
+  it('GET /credentials/status sem Authorization responde 401, sem chamar o interactor', async () => {
+    let called = false
+    const port = await listen(
+      fakeContainer({
+        checkCredential: async () => {
+          called = true
+          return { data: {} }
+        },
+      }),
+    )
+
+    const response = await fetch(`http://127.0.0.1:${port}/credentials/status`)
+
+    expect(response.status).toBe(401)
+    expect(await response.json()).toEqual({ errorType: 'PLUGGY_CONNECTOR_UNAUTHORIZED' })
+    expect(called).toBe(false)
+  })
+
+  it('GET /credentials/status com token e sem credencial responde hasCredential:false', async () => {
+    const port = await listen(
+      fakeContainer({
+        checkCredential: async () => ({
+          error: new ApplicationError('PLUGGY_CREDENTIAL_NOT_FOUND_FOR_PERSON', { personId: 1 }),
+        }),
+      }),
+    )
+
+    const response = await fetch(`http://127.0.0.1:${port}/credentials/status`, {
+      headers: { authorization: `Bearer ${validToken}` },
+    })
+
+    expect(response.status).toBe(200)
+    expect(await response.json()).toEqual({ hasCredential: false })
+  })
+
+  it('GET /credentials/status com token e credencial completa responde hasCredential:true', async () => {
+    const port = await listen(fakeContainer({ checkCredential: async () => ({ data: {} }) }))
+
+    const response = await fetch(`http://127.0.0.1:${port}/credentials/status`, {
+      headers: { authorization: `Bearer ${validToken}` },
+    })
+
+    expect(response.status).toBe(200)
+    expect(await response.json()).toEqual({ hasCredential: true })
   })
 })

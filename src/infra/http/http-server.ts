@@ -1,5 +1,6 @@
 import express, { type Express, type NextFunction, type Request, type Response } from 'express'
 import { registerPluggyCredentialHandler } from '../../adapters/handlers/register-pluggy-credential.handler.js'
+import { checkPluggyCredentialHandler } from '../../adapters/handlers/check-pluggy-credential.handler.js'
 import { createAuthenticateMiddleware } from './middleware/authenticate.middleware.js'
 import { createRequestScopeMiddleware } from './middleware/request-scope.middleware.js'
 import type { AppContainerInstance } from '../bootstrap/register.js'
@@ -33,6 +34,10 @@ export function createHttpServer(deps: HttpServerDependencies): Express {
   app.get('/healthcheck', checkHealthHandler)
 
   app.post('/credentials', authenticate, registerPluggyCredentialHandler)
+
+  // Estado de configuração da credencial (expor-status-credencial-pluggy) — front consulta para
+  // decidir visibilidade de menus que dependem de credencial já cadastrada.
+  app.get('/credentials/status', authenticate, checkPluggyCredentialHandler)
 
   // Carga histórica manual, só por decisão explícita do titular (tasks.md 6.3).
   app.post('/items/:itemId/history/load', authenticate, loadPluggyHistoryHandler)
