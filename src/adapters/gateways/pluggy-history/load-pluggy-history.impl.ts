@@ -23,6 +23,7 @@ import type { PluggyInvestmentTransactionRep } from '../../repositories/pluggy-i
 import type { PluggyAccountRawRep } from '../../repositories/pluggy-account-raw.rep.js'
 import type { PluggyAccountTransactionRawRep } from '../../repositories/pluggy-account-transaction-raw.rep.js'
 import type { PluggyInvestmentTransactionRawRep } from '../../repositories/pluggy-investment-transaction-raw.rep.js'
+import type { LeaseGuard } from '../../../shared/lease-guard.js'
 
 // Gateway do caso de uso `load-pluggy-history`. Tudo que é mecanismo vive aqui: credencial, api key,
 // paginação por página e por cursor, transação. Cada página é persistida ANTES de ser devolvida ao
@@ -79,19 +80,20 @@ export default class LoadPluggyHistoryImpl extends DefaultInteractorGatewayImpl 
     return this.pluggySyncProgressRep.read(itemId, 'HISTORY_LOAD', source)
   }
 
-  advanceSyncProgress(itemId: string, source: PluggySource, versionAt: Date): Promise<void> {
-    return this.pluggySyncProgressRep.advance(itemId, 'HISTORY_LOAD', source, versionAt)
+  async advanceSyncProgress(itemId: string, source: PluggySource, versionAt: Date): Promise<void> {
+    await this.pluggySyncProgressRep.advance(itemId, 'HISTORY_LOAD', source, versionAt)
   }
 
   // Descobre e registra as contas de depósito e de cartão de crédito percorrendo a paginação
   // inteira, persistindo cada página na hora (change pluggy-complete-data-capture, spec
   // pluggy-account: `CREDIT` deixou de ser ignorado — a fatura já é capturada pelo gateway de
   // contas, só faltava não descartar a conta antes de registrá-la).
-  async readCashSources(itemId: string): Promise<HistorySource[]> {
+  async readCashSources(itemId: string, leaseGuard: LeaseGuard | undefined): Promise<HistorySource[]> {
     const client = await this.pluggyItemCredentialResolver.clientFor(itemId)
     const sources: HistorySource[] = []
 
     for await (const page of this.pluggyAccountsGateway.fetchAccountPages(itemId, client)) {
+      this.ensureLeaseHeld(itemId, leaseGuard)
       for (const account of page.results) {
         if (account.type !== 'BANK' && account.type !== 'CREDIT') {
           continue
@@ -119,11 +121,12 @@ export default class LoadPluggyHistoryImpl extends DefaultInteractorGatewayImpl 
     return sources
   }
 
-  async readCustodySources(itemId: string): Promise<HistorySource[]> {
+  async readCustodySources(itemId: string, leaseGuard: LeaseGuard | undefined): Promise<HistorySource[]> {
     const client = await this.pluggyItemCredentialResolver.clientFor(itemId)
     const sources: HistorySource[] = []
 
     for await (const page of this.pluggyInvestmentsGateway.fetchInvestmentPages(itemId, client)) {
+      this.ensureLeaseHeld(itemId, leaseGuard)
       for (const investment of page.results) {
         sources.push({
           kind: 'INVESTMENT',
@@ -136,13 +139,21 @@ export default class LoadPluggyHistoryImpl extends DefaultInteractorGatewayImpl 
     return sources
   }
 
-  // Leitura autoritativa de contas reconcilia a fotografia atual (design.md D21) — todo registro
-  // local daquele Item cujo `accountId` não veio na leitura atual deixa de pertencer à fotografia.
-  async reconcileAccounts(itemId: string, presentAccountIds: string[]): Promise<void> {
+  // Commit atômico (revisão do PR #14): dentro de UMA transação, tenta avançar `pluggy_sync_progress`
+  // condicionalmente à versão e só reconcilia a fotografia atual (design.md D21) — todo registro
+  // local cujo `accountId` não veio na leitura atual — quando essa tentativa venceu a corrida. Uma
+  // execução velha cujo `advance` perde a corrida nunca chega a reconciliar (no-op completo).
+  async commitAccountsDiscovery(itemId: string, presentAccountIds: string[], versionAt: Date): Promise<boolean> {
     await this.startProcess()
     try {
+      const won = await this.pluggySyncProgressRep.advance(itemId, 'HISTORY_LOAD', 'ACCOUNTS', versionAt)
+      if (!won) {
+        await this.terminateProcess()
+        return false
+      }
       await this.pluggyAccountRep.reconcile(itemId, presentAccountIds)
       await this.terminateProcess()
+      return true
     } catch (err) {
       await this.cancelProcess()
       throw err
@@ -151,7 +162,10 @@ export default class LoadPluggyHistoryImpl extends DefaultInteractorGatewayImpl 
 
   // Uma página persistida por iteração. O caso de uso acumula a observação e só grava a conclusão
   // depois da última — falha no meio interrompe o gerador e a conclusão anterior fica intacta.
-  async *scanSource(itemId: string, source: HistorySource): AsyncGenerator<PersistedPage> {
+  // `leaseGuard` (revisão do PR #14): checado antes de processar cada página recebida, e portanto
+  // antes de o laço pedir a página seguinte ao gerador interno — perda de lease no meio da varredura
+  // nunca busca mais uma página.
+  async *scanSource(itemId: string, source: HistorySource, leaseGuard: LeaseGuard | undefined): AsyncGenerator<PersistedPage> {
     const client = await this.pluggyItemCredentialResolver.clientFor(itemId)
 
     if (source.kind === 'ACCOUNT') {
@@ -159,6 +173,7 @@ export default class LoadPluggyHistoryImpl extends DefaultInteractorGatewayImpl 
         source.referenceId,
         client,
       )) {
+        this.ensureLeaseHeld(itemId, leaseGuard)
         for (const transaction of page.results) {
           // A Pluggy devolve `accountId` em cada lançamento: divergir da conta consultada é resposta
           // trocada, recusa nomeada em vez de gravar lançamento na conta errada (tasks.md 6.2).
@@ -201,6 +216,7 @@ export default class LoadPluggyHistoryImpl extends DefaultInteractorGatewayImpl 
       source.referenceId,
       client,
     )) {
+      this.ensureLeaseHeld(itemId, leaseGuard)
       for (const transaction of page.results) {
         await this.startProcess()
         try {
@@ -244,6 +260,17 @@ export default class LoadPluggyHistoryImpl extends DefaultInteractorGatewayImpl 
     if (!credential || credential.getPersonId() !== personId) {
       throw new ApplicationError('PLUGGY_ITEM_UNAUTHORIZED', { itemId })
     }
+  }
+
+  // Mesmo invariante de `LoadPluggyHistoryInteractor.ensureLeaseHeld` (D16, revisão do PR #14),
+  // aplicado aqui dentro dos próprios geradores/paginação: perda de lease detectada antes de pedir a
+  // próxima página lança, e o `for await` do chamador nunca chega a pedir mais uma.
+  private ensureLeaseHeld(itemId: string, leaseGuard: LeaseGuard | undefined): void {
+    if (!leaseGuard?.isLost()) {
+      return
+    }
+    this.logError('Lease de ingestão perdido, paginação de histórico interrompida antes de nova página', { itemId })
+    throw new ApplicationError('PLUGGY_ITEM_INGESTION_LEASE_LOST', { itemId })
   }
 }
 

@@ -51,6 +51,13 @@ export class LoadPluggyHistoryInteractor {
     })
 
     try {
+      // Revisão do PR #14 (D16): lease já perdido ANTES de qualquer chamada, inclusive antes de
+      // `readCurrentItemState` — que já é, por si só, uma chamada real à Pluggy (`fetchItem`, via
+      // `PluggyItemStateResolver`). Sem isto, uma execução que já perdeu a posse ainda dispararia
+      // essa chamada antes do primeiro ponto de checagem. Lança (propaga ao `catch` abaixo, que já
+      // traduz `ApplicationError` em `{error}`) — mesmo mecanismo do resto do arquivo.
+      this.ensureLeaseHeld(itemId, leaseGuard)
+
       if (input.origin === 'USER') {
         await this.gateway.assertItemAccess(itemId, input.personId)
       }
@@ -70,8 +77,11 @@ export class LoadPluggyHistoryInteractor {
         'ACCOUNTS',
         'ACCOUNT_TRANSACTIONS',
         {
-          discover: () => this.gateway.readCashSources(itemId),
-          reconcile: (ids) => this.gateway.reconcileAccounts(itemId, ids),
+          discover: () => this.gateway.readCashSources(itemId, leaseGuard),
+          // Commit atômico (revisão do PR #14/D21): reconciliação e avanço da marca d'água juntos,
+          // protegidos pela mesma versão — nunca separados, para uma execução velha nunca regredir a
+          // fotografia de contas.
+          commitDiscovery: (ids, versionAt) => this.gateway.commitAccountsDiscovery(itemId, ids, versionAt),
         },
         leaseGuard,
       )
@@ -81,10 +91,12 @@ export class LoadPluggyHistoryInteractor {
         'INVESTMENTS',
         'INVESTMENT_TRANSACTIONS',
         {
-          discover: () => this.gateway.readCustodySources(itemId),
+          discover: () => this.gateway.readCustodySources(itemId, leaseGuard),
           // Reconciliação de `radar_pluggy_positions` pertence só a `SyncPluggyPositionImpl` (que lê
           // `INVESTMENTS` sob o consumidor `POSITION_SYNC`) — a descoberta aqui é só instrumental,
-          // para achar quais investimentos escanear em busca de transações de custódia (D4).
+          // para achar quais investimentos escanear em busca de transações de custódia (D4). Sem
+          // fotografia própria pra reconciliar aqui, o avanço simples (`advanceSyncProgress`) já
+          // basta — nada de destrutivo depende dele.
         },
         leaseGuard,
       )
@@ -130,7 +142,12 @@ export class LoadPluggyHistoryInteractor {
     item: CurrentItemHistoryState,
     discoverySource: PluggySource,
     transactionSource: PluggySource,
-    hooks: { discover: () => Promise<HistorySource[]>; reconcile?: (presentIds: string[]) => Promise<void> },
+    hooks: {
+      discover: () => Promise<HistorySource[]>
+      // Commit atômico (reconciliação + avanço de versão, juntos) — quando ausente (custódia), a
+      // fonte de descoberta não tem fotografia própria a reconciliar, e o avanço simples basta.
+      commitDiscovery?: (presentIds: string[], versionAt: Date) => Promise<boolean>
+    },
     leaseGuard: LeaseGuard | undefined,
   ): Promise<GroupResult> {
     const discovery = await this.evaluateSource(itemId, item, discoverySource)
@@ -153,10 +170,17 @@ export class LoadPluggyHistoryInteractor {
 
     if (discovery.outdated && discovery.versionAt !== undefined) {
       this.ensureLeaseHeld(itemId, leaseGuard)
-      if (hooks.reconcile) {
-        await hooks.reconcile(sources.map((source) => source.referenceId))
+      if (hooks.commitDiscovery) {
+        const committed = await hooks.commitDiscovery(sources.map((source) => source.referenceId), discovery.versionAt)
+        if (!committed) {
+          this.gateway.logInfo('Versão mais nova já aplicada por outra execução, fotografia de contas não regride', {
+            itemId,
+            source: discoverySource,
+          })
+        }
+      } else {
+        await this.gateway.advanceSyncProgress(itemId, discoverySource, discovery.versionAt)
       }
-      await this.gateway.advanceSyncProgress(itemId, discoverySource, discovery.versionAt)
     }
 
     let sourcesScanned = 0
@@ -182,7 +206,7 @@ export class LoadPluggyHistoryInteractor {
   private async scanUntilTheEnd(itemId: string, source: HistorySource, leaseGuard: LeaseGuard | undefined): Promise<CompletedScan> {
     let scan = ObservedHistoryScan.empty()
 
-    for await (const page of this.gateway.scanSource(itemId, source)) {
+    for await (const page of this.gateway.scanSource(itemId, source, leaseGuard)) {
       this.ensureLeaseHeld(itemId, leaseGuard)
       scan = scan.observe(page)
     }

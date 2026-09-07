@@ -25,18 +25,37 @@ export interface AcquiredIngestionLease {
 // Adquire o lease do Item e já inicia o heartbeat (renova a cada ttl/3, design.md D16) — usado tanto
 // por `runPluggyItemIngestion` quanto pela rota manual (D30), que precisa manter o MESMO lease vivo
 // entre a chamada síncrona de History e a continuação em background de Position.
+//
+// `resolveLogger` é uma função, nunca o `Logger` já resolvido: só é chamada DEPOIS que `tryAcquire`
+// confirma a posse — resolver o logger antes disso (como argumento eager de quem chama) acoplaria a
+// garantia "lease já adquirido é sempre liberado, mesmo com o resto do wiring quebrado" ao sucesso de
+// um `resolve('logger')` que só serve para o log do heartbeat (mesma lição do `resolve('requestId')`
+// em `load-pluggy-history.handler.ts`). E mesmo essa resolução tardia nunca pode derrubar um lease já
+// adquirido: se `resolveLogger` falhar, cai num logger nulo — o heartbeat continua funcionando, só
+// sem log, em vez de vazar um lease que nunca mais seria liberado.
 export async function acquireLeaseWithHeartbeat(
   leaseRep: PluggyItemIngestionLeaseRep,
   itemId: string,
   trigger: string,
+  resolveLogger: () => Logger,
 ): Promise<AcquiredIngestionLease | undefined> {
   const fencingToken = await leaseRep.tryAcquire(itemId, trigger, INGESTION_LEASE_TTL_MS)
   if (fencingToken === undefined) {
     return undefined
   }
 
-  const heartbeat = startHeartbeat(leaseRep, itemId, fencingToken)
+  const heartbeat = startHeartbeat(leaseRep, itemId, fencingToken, safeResolveLogger(resolveLogger))
   return { fencingToken, stopHeartbeat: heartbeat.stop, guard: heartbeat.guard }
+}
+
+const NOOP_LOGGER: Logger = { addContext: () => {}, info: () => {}, warn: () => {}, error: () => {} }
+
+function safeResolveLogger(resolveLogger: () => Logger): Logger {
+  try {
+    return resolveLogger()
+  } catch {
+    return NOOP_LOGGER
+  }
 }
 
 export interface PluggyItemIngestionResult {
@@ -87,10 +106,10 @@ async function executeIngestion(
   const lease =
     preAcquiredFencingToken !== undefined
       ? (() => {
-          const heartbeat = startHeartbeat(leaseRep, itemId, preAcquiredFencingToken)
+          const heartbeat = startHeartbeat(leaseRep, itemId, preAcquiredFencingToken, logger)
           return { fencingToken: preAcquiredFencingToken, stopHeartbeat: heartbeat.stop, guard: heartbeat.guard }
         })()
-      : await acquireLeaseWithHeartbeat(leaseRep, itemId, trigger)
+      : await acquireLeaseWithHeartbeat(leaseRep, itemId, trigger, () => logger)
 
   if (lease === undefined) {
     logger.info('Lease de ingestão ocupado por outro trigger, ingestão não iniciada')
@@ -119,20 +138,38 @@ async function executeIngestion(
 
 // Invariante exigido para esta implementação: `renew() === false` (posse perdida — outro trigger
 // reivindicou o lease vencido) marca `lost`, nunca reencaminhado como exceção — o heartbeat não deve
-// derrubar quem o iniciou, só sinalizar. Uma vez perdido, permanece perdido: mesmo que uma renovação
-// seguinte falhe por outro motivo transitório, não há como voltar a possuir o `fencingToken` antigo.
+// derrubar quem o iniciou, só sinalizar. Uma renovação que REJEITA (erro de rede/banco) também marca
+// `lost` (revisão do PR #14): sem saber se o lease ainda é nosso, tratar como perdido é o lado seguro
+// do erro — nunca um `unhandled rejection` silencioso. Uma vez perdido, permanece perdido: mesmo que
+// uma renovação seguinte tenha sucesso ou falhe por outro motivo, não há como voltar a possuir o
+// `fencingToken` antigo com confiança.
 function startHeartbeat(
   leaseRep: PluggyItemIngestionLeaseRep,
   itemId: string,
   fencingToken: number,
+  logger: Logger,
 ): { stop: () => void; guard: LeaseGuard } {
   let lost = false
   const heartbeat = setInterval(() => {
-    void leaseRep.renew(itemId, fencingToken, INGESTION_LEASE_TTL_MS).then((renewed) => {
-      if (!renewed) {
+    leaseRep
+      .renew(itemId, fencingToken, INGESTION_LEASE_TTL_MS)
+      .then((renewed) => {
+        if (!renewed) {
+          lost = true
+          logger.warn('Renovação de lease de ingestão recusada — outro trigger já assumiu, posse perdida', {
+            itemId,
+            fencingToken,
+          })
+        }
+      })
+      .catch((err: unknown) => {
         lost = true
-      }
-    })
+        logger.warn('Renovação de lease de ingestão falhou — posse tratada como perdida por segurança', {
+          itemId,
+          fencingToken,
+          err,
+        })
+      })
   }, Math.floor(INGESTION_LEASE_TTL_MS / HEARTBEAT_DIVISOR))
   return { stop: () => clearInterval(heartbeat), guard: { isLost: () => lost } }
 }

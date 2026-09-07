@@ -71,7 +71,10 @@ function buildGateway(overrides: Partial<LoadPluggyHistoryGateway> = {}): {
       calls.custodyDiscovered++
       return [investment()]
     },
-    reconcileAccounts: async () => {},
+    commitAccountsDiscovery: async (_itemId, _presentIds, versionAt) => {
+      calls.advanced.push({ source: 'ACCOUNTS', versionAt })
+      return true
+    },
 
     scanSource: async function* (_itemId, source) {
       calls.scanned.push(`${source.kind}:${source.referenceId}`)
@@ -253,16 +256,33 @@ describe('LoadPluggyHistoryInteractor', () => {
 
   it('leitura autoritativa de contas reconcilia a fotografia atual só quando ACCOUNTS é utilizável', async () => {
     let reconciledWith: string[] | undefined
+    let reconciledVersion: Date | undefined
     const { gateway } = buildGateway({
       readCashSources: async () => [account('acc-1'), account('acc-2')],
-      reconcileAccounts: async (_itemId, ids) => {
+      commitAccountsDiscovery: async (_itemId, ids, versionAt) => {
         reconciledWith = ids
+        reconciledVersion = versionAt
+        return true
       },
     })
 
     await buildInteractor(gateway).execute({ origin: 'INTERNAL_DRAINER', itemId: ITEM_ID })
 
     expect(reconciledWith).toEqual(['acc-1', 'acc-2'])
+    expect(reconciledVersion).toEqual(new Date(ITEM_UPDATED_AT))
+  })
+
+  it('versão mais antiga que perde a corrida do commit de contas nunca impede a varredura de transações', async () => {
+    const { gateway, calls } = buildGateway({
+      commitAccountsDiscovery: async () => false,
+    })
+
+    const result = await buildInteractor(gateway).execute({ origin: 'INTERNAL_DRAINER', itemId: ITEM_ID })
+
+    expect(result.error).toBeUndefined()
+    // A varredura de transações roda independente do resultado do commit de descoberta — só o
+    // avanço de ACCOUNTS em si é que não regride.
+    expect(calls.scanned).toContain('ACCOUNT:acc-1')
   })
 
   it('investimento sem movimentação grava contagem zero e datas nulas, não "período coberto"', async () => {
@@ -412,6 +432,47 @@ describe('LoadPluggyHistoryInteractor', () => {
     expect(calls.advanced).toEqual([])
   })
 
+  // Revisão do PR #14: CREDIT_CARDS é o segundo produto de origem de ACCOUNTS (GET /accounts devolve
+  // BANK e CREDIT juntos) — um Item habilitado só com CREDIT_CARDS (sem ACCOUNTS) ainda precisa
+  // descobrir a conta de cartão e varrer suas transações; antes desta correção, ACCOUNT_TRANSACTIONS
+  // nunca avançava porque dependia só de `ACCOUNTS.usable`, e ACCOUNTS nunca era sequer elegível.
+  it('Item com CREDIT_CARDS + TRANSACTIONS, sem ACCOUNTS: conta CREDIT é descoberta e transações são varridas', async () => {
+    const { gateway, calls } = buildGateway({
+      readCurrentItemState: async () => itemState({ itemProducts: ['CREDIT_CARDS', 'TRANSACTIONS'] }),
+      readCashSources: async () => {
+        calls.cashDiscovered++
+        return [account('acc-credit')]
+      },
+    })
+
+    const result = await buildInteractor(gateway).execute({ origin: 'INTERNAL_DRAINER', itemId: ITEM_ID })
+
+    expect(result.error).toBeUndefined()
+    expect(calls.cashDiscovered).toBe(1)
+    expect(calls.scanned).toEqual(['ACCOUNT:acc-credit'])
+    expect(calls.advanced.map((a) => a.source).sort()).toEqual(['ACCOUNTS', 'ACCOUNT_TRANSACTIONS'].sort())
+    expect(result.data?.sourcesRefused).toEqual([])
+  })
+
+  it('revisão PR #14: lease já perdido antes de qualquer chamada nunca dispara readCurrentItemState (fetchItem real)', async () => {
+    let readCurrentItemStateCalled = false
+    const { gateway } = buildGateway({
+      readCurrentItemState: async () => {
+        readCurrentItemStateCalled = true
+        throw new Error('não deveria ser chamado com lease já perdido')
+      },
+    })
+
+    const result = await buildInteractor(gateway).execute({
+      origin: 'INTERNAL_DRAINER',
+      itemId: ITEM_ID,
+      leaseGuard: { isLost: () => true },
+    })
+
+    expect(result.error?.errorType).toBe('PLUGGY_ITEM_INGESTION_LEASE_LOST')
+    expect(readCurrentItemStateCalled).toBe(false)
+  })
+
   it('lease perdido logo após a primeira página de uma fonte interrompe antes de pedir a próxima, sem gravar conclusão', async () => {
     let secondPageRequested = false
     const { gateway, calls } = buildGateway({
@@ -423,13 +484,14 @@ describe('LoadPluggyHistoryInteractor', () => {
         yield { count: 1, oldestAt: new Date('2026-05-01T00:00:00.000Z'), newestAt: new Date('2026-06-01T00:00:00.000Z') }
       },
     })
-    // As duas primeiras checagens (antes de descobrir, antes de reconciliar/avançar ACCOUNTS)
-    // encontram o lease ainda vivo; a terceira, logo após a 1ª página da varredura, encontra a perda.
+    // As três primeiras checagens (upfront no início de `execute`, antes de descobrir, antes de
+    // reconciliar/avançar ACCOUNTS) encontram o lease ainda vivo; a quarta, logo após a 1ª página da
+    // varredura, encontra a perda.
     let checks = 0
     const leaseGuard = {
       isLost: () => {
         checks++
-        return checks > 2
+        return checks > 3
       },
     }
 

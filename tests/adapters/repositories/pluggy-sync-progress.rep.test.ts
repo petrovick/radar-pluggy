@@ -30,12 +30,12 @@ describe('PluggySyncProgressRep', () => {
     expect(await repository.read(randomUUID(), 'POSITION_SYNC', 'INVESTMENTS')).toBeUndefined()
   })
 
-  it('advance grava e read devolve a versão gravada', async () => {
+  it('advance grava e read devolve a versão gravada; devolve true (venceu a corrida)', async () => {
     const itemId = randomUUID()
     itemIdsToCleanup.push(itemId)
     const versionAt = new Date('2026-08-01T00:00:00.000Z')
 
-    await repository.advance(itemId, 'POSITION_SYNC', 'INVESTMENTS', versionAt)
+    await expect(repository.advance(itemId, 'POSITION_SYNC', 'INVESTMENTS', versionAt)).resolves.toBe(true)
 
     expect(await repository.read(itemId, 'POSITION_SYNC', 'INVESTMENTS')).toEqual(versionAt)
   })
@@ -58,14 +58,14 @@ describe('PluggySyncProgressRep', () => {
     expect(await repository.read(itemId, 'HISTORY_LOAD', 'INVESTMENTS')).toBeUndefined()
   })
 
-  it('timestamp mais antigo é recusado (no-op), a marca d’água registrada não muda', async () => {
+  it('timestamp mais antigo é recusado (no-op, devolve false), a marca d’água registrada não muda', async () => {
     const itemId = randomUUID()
     itemIdsToCleanup.push(itemId)
     const first = new Date('2026-08-01T00:00:00.000Z')
     const earlier = new Date('2026-07-01T00:00:00.000Z')
 
-    await repository.advance(itemId, 'HISTORY_LOAD', 'ACCOUNTS', first)
-    await repository.advance(itemId, 'HISTORY_LOAD', 'ACCOUNTS', earlier)
+    await expect(repository.advance(itemId, 'HISTORY_LOAD', 'ACCOUNTS', first)).resolves.toBe(true)
+    await expect(repository.advance(itemId, 'HISTORY_LOAD', 'ACCOUNTS', earlier)).resolves.toBe(false)
 
     expect(await repository.read(itemId, 'HISTORY_LOAD', 'ACCOUNTS')).toEqual(first)
   })

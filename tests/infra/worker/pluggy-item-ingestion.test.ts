@@ -12,8 +12,10 @@ type LeaseCalls = {
 
 function buildContainer(options: {
   tryAcquireReturns?: number | undefined
-  positionExecute?: () => Promise<{ error?: ApplicationError }>
-  historyExecute?: () => Promise<{ error?: ApplicationError }>
+  positionExecute?: (input?: { leaseGuard?: { isLost(): boolean } }) => Promise<{ error?: ApplicationError }>
+  historyExecute?: (input?: { leaseGuard?: { isLost(): boolean } }) => Promise<{ error?: ApplicationError }>
+  renewImpl?: (itemId: string, fencingToken: number, ttlMs: number) => Promise<boolean>
+  logCalls?: { level: string; message: string; extra?: unknown }[]
 }): { container: AppContainerInstance; leaseCalls: LeaseCalls } {
   const leaseCalls: LeaseCalls = { tryAcquire: [], renew: [], release: [] }
   const leaseRep = {
@@ -23,7 +25,7 @@ function buildContainer(options: {
     },
     renew: async (itemId: string, fencingToken: number, ttlMs: number) => {
       leaseCalls.renew.push({ itemId, fencingToken, ttlMs })
-      return true
+      return options.renewImpl ? options.renewImpl(itemId, fencingToken, ttlMs) : true
     },
     release: async (itemId: string, fencingToken: number) => {
       leaseCalls.release.push({ itemId, fencingToken })
@@ -34,7 +36,14 @@ function buildContainer(options: {
   const scope = {
     register: () => {},
     resolve: (key: string) => {
-      if (key === 'logger') return { addContext: () => {}, info: () => {}, warn: () => {}, error: () => {} }
+      if (key === 'logger') {
+        return {
+          addContext: () => {},
+          info: () => {},
+          warn: (message: string, extra?: unknown) => options.logCalls?.push({ level: 'warn', message, extra }),
+          error: () => {},
+        }
+      }
       if (key === 'pluggyItemIngestionLeaseRep') return leaseRep
       if (key === 'syncPluggyPositionInteractor') return { execute: options.positionExecute ?? (async () => ({})) }
       if (key === 'loadPluggyHistoryInteractor') return { execute: options.historyExecute ?? (async () => ({})) }
@@ -140,6 +149,86 @@ describe('runPluggyItemIngestion', () => {
       expect(leaseCalls.release).toEqual([{ itemId: 'item-1', fencingToken: 3 }])
       // Depois de liberado, o heartbeat não deveria renovar mais.
       expect(leaseCalls.renew.length).toBe(renewedBeforeRelease)
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it('revisão PR #14: renew() === false marca o guard como perdido, logado com segurança', async () => {
+    vi.useFakeTimers()
+    try {
+      let renewShouldSucceed = true
+      let leaseGuardSeenByHistory: { isLost(): boolean } | undefined
+      const logCalls: { level: string; message: string; extra?: unknown }[] = []
+
+      let resolveHistory: (() => void) | undefined
+      const historyPromise = new Promise<{ error?: ApplicationError }>((resolve) => {
+        resolveHistory = () => resolve({})
+      })
+
+      const { container } = buildContainer({
+        tryAcquireReturns: 3,
+        renewImpl: async () => renewShouldSucceed,
+        historyExecute: (input) => {
+          leaseGuardSeenByHistory = input?.leaseGuard
+          return historyPromise
+        },
+        logCalls,
+      })
+
+      const ingestion = runPluggyItemIngestion(container, 'item-1', 'MANUAL_HISTORY_LOAD')
+
+      // Primeiro heartbeat renova normalmente.
+      await vi.advanceTimersByTimeAsync(200_000)
+      expect(leaseGuardSeenByHistory?.isLost()).toBe(false)
+
+      // A partir daqui, outro trigger já assumiu o lease vencido — renew() passa a devolver false.
+      renewShouldSucceed = false
+      await vi.advanceTimersByTimeAsync(200_000)
+
+      expect(leaseGuardSeenByHistory?.isLost()).toBe(true)
+      expect(logCalls.some((call) => call.level === 'warn')).toBe(true)
+
+      resolveHistory?.()
+      await ingestion
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it('revisão PR #14: renew() que rejeita marca o guard como perdido, sem unhandled rejection', async () => {
+    vi.useFakeTimers()
+    try {
+      let leaseGuardSeenByHistory: { isLost(): boolean } | undefined
+      const logCalls: { level: string; message: string; extra?: unknown }[] = []
+
+      let resolveHistory: (() => void) | undefined
+      const historyPromise = new Promise<{ error?: ApplicationError }>((resolve) => {
+        resolveHistory = () => resolve({})
+      })
+
+      const { container } = buildContainer({
+        tryAcquireReturns: 3,
+        renewImpl: async () => {
+          throw new Error('conexão com o banco caiu')
+        },
+        historyExecute: (input) => {
+          leaseGuardSeenByHistory = input?.leaseGuard
+          return historyPromise
+        },
+        logCalls,
+      })
+
+      const ingestion = runPluggyItemIngestion(container, 'item-1', 'MANUAL_HISTORY_LOAD')
+
+      // Se a rejeição escapasse sem tratamento, o processo de teste falharia com unhandled rejection.
+      await vi.advanceTimersByTimeAsync(200_000)
+
+      expect(leaseGuardSeenByHistory?.isLost()).toBe(true)
+      expect(logCalls.some((call) => call.level === 'warn')).toBe(true)
+
+      resolveHistory?.()
+      await ingestion
     } finally {
       vi.useRealTimers()
     }

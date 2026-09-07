@@ -1,17 +1,19 @@
 import { ApplicationError } from '../../shared/application-error.js'
 import type { PluggyProductKey, PluggyProductStatus } from './pluggy-items.gateway.js'
-import { productTypeFromSource, statusDetailKeyFromSource, type PluggySource } from './pluggy-source-catalog.js'
+import { discoveryProductTypesFor, discoveryStatusDetailKeysFor, type PluggySource } from './pluggy-source-catalog.js'
 
 // Gate de elegibilidade por fonte (design.md D26): `enabledForItem` MUST ser verdadeiro antes de
 // qualquer outra checagem — uma fonte que o connector suporta mas que este Item não pediu nunca é
 // elegível, mesmo sem marca d'água prévia. `itemProducts` ausente (`UNKNOWN`, D26) nunca vira
 // elegibilidade por omissão: `enabledForItem` devolve `undefined` nesse caso, e `isEligible` trata
-// `undefined` como não-elegível, igual a `false`.
+// `undefined` como não-elegível, igual a `false`. `ACCOUNTS` é elegível se QUALQUER um dos dois
+// produtos de origem (`ACCOUNTS` ou `CREDIT_CARDS`) estiver habilitado (revisão do PR #14) — as
+// outras fontes continuam com um produto só, comportamento inalterado.
 export function enabledForItem(itemProducts: string[] | undefined, source: PluggySource): boolean | undefined {
   if (itemProducts === undefined) {
     return undefined
   }
-  return itemProducts.includes(productTypeFromSource(source))
+  return discoveryProductTypesFor(source).some((productType) => itemProducts.includes(productType))
 }
 
 export function isEligible(itemProducts: string[] | undefined, source: PluggySource): boolean {
@@ -32,6 +34,29 @@ export interface SourceState {
   lastUpdatedAt: string | undefined
 }
 
+// Entradas de `statusDetail` de fato presentes para esta fonte nesta execução — a Pluggy só relata
+// um produto no `statusDetail` quando ele foi de fato pedido/habilitado para o Item (nunca reporta
+// produto não solicitado), então "presente" já significa "habilitado neste Item" sem precisar
+// conhecer `itemProducts` aqui (mantém a separação de D26: elegibilidade é decisão de
+// `enabledForItem`, não desta função). Para `ACCOUNTS`, pode haver até duas (`accounts`/
+// `creditCards`); para as demais fontes, no máximo uma.
+function presentProductsFor(item: SourceStateInput, source: PluggySource): PluggyProductStatus[] {
+  return discoveryStatusDetailKeysFor(source)
+    .map((key) => item.products[key as PluggyProductKey])
+    .filter((product): product is PluggyProductStatus => product !== undefined)
+}
+
+// Maior `lastUpdatedAt` entre os produtos informados — quando `ACCOUNTS` tem os dois produtos de
+// origem habilitados (`ACCOUNTS` e `CREDIT_CARDS`), a versão da execução é a mais recente das duas,
+// nunca a mais antiga (não faria sentido reconhecer como "processada" uma versão anterior à que
+// alguma das duas fontes de fato confirmou).
+function maxLastUpdatedAt(products: PluggyProductStatus[]): string | undefined {
+  return products.reduce<string | undefined>((max, product) => {
+    if (product.lastUpdatedAt === undefined) return max
+    return max === undefined || product.lastUpdatedAt > max ? product.lastUpdatedAt : max
+  }, undefined)
+}
+
 export function toSourceState(item: SourceStateInput, source: PluggySource): SourceState {
   if (item.executionStatus === 'SUCCESS') {
     // Em SUCCESS, `statusDetail` é `null` (D12) — toda fonte suportada é utilizável, sem versão
@@ -40,9 +65,15 @@ export function toSourceState(item: SourceStateInput, source: PluggySource): Sou
   }
 
   if (item.executionStatus === 'PARTIAL_SUCCESS') {
-    const product = item.products[statusDetailKeyFromSource(source) as PluggyProductKey]
-    const usable = product?.isUpdated === true
-    return { isUsable: usable, lastUpdatedAt: usable ? product?.lastUpdatedAt : undefined }
+    const present = presentProductsFor(item, source)
+    if (present.length === 0) {
+      return { isUsable: false, lastUpdatedAt: undefined }
+    }
+    // Todos os produtos de origem presentes precisam estar atualizados — para `ACCOUNTS` com os dois
+    // habilitados, um cartão de crédito ainda pendente nunca deixa a fonte utilizável só porque a
+    // conta bancária já processou (revisão do PR #14).
+    const usable = present.every((product) => product.isUpdated === true)
+    return { isUsable: usable, lastUpdatedAt: usable ? maxLastUpdatedAt(present) : undefined }
   }
 
   return { isUsable: false, lastUpdatedAt: undefined }
@@ -70,14 +101,15 @@ export function toVersionAt(
   }
 
   if (item.executionStatus === 'PARTIAL_SUCCESS') {
-    const product = item.products[statusDetailKeyFromSource(source) as PluggyProductKey]
-    if (product?.isUpdated !== true) {
+    const present = presentProductsFor(item, source)
+    if (present.length === 0 || !present.every((product) => product.isUpdated === true)) {
       return undefined
     }
-    if (product.lastUpdatedAt === undefined) {
+    if (present.some((product) => product.lastUpdatedAt === undefined)) {
       throw new ApplicationError('PLUGGY_ITEM_PRODUCT_UPDATED_WITHOUT_LAST_UPDATED_AT', { itemId, source })
     }
-    return new Date(product.lastUpdatedAt)
+    // Não-nulo: já garantido pela checagem acima.
+    return new Date(maxLastUpdatedAt(present)!)
   }
 
   return undefined

@@ -66,7 +66,7 @@ export function createLoadPluggyHistoryHandler(
       // mesmo que o resto do wiring da requisição esteja quebrado (não depende de `resolve('requestId')`
       // ter sucesso).
       const leaseRep = reqContainer.resolve('pluggyItemIngestionLeaseRep')
-      const lease = await acquireLeaseWithHeartbeat(leaseRep, itemId, 'MANUAL_HISTORY_LOAD')
+      const lease = await acquireLeaseWithHeartbeat(leaseRep, itemId, 'MANUAL_HISTORY_LOAD', () => reqContainer.resolve('logger'))
       if (lease === undefined) {
         res.status(400).json({ errorType: 'PLUGGY_ITEM_INGESTION_IN_PROGRESS' })
         return

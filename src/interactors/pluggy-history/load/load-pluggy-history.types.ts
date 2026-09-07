@@ -56,17 +56,24 @@ export interface LoadPluggyHistoryGateway extends DefaultGateway {
   advanceSyncProgress(itemId: string, source: PluggySource, versionAt: Date): Promise<void>
 
   // Descobre TODAS as contas de depósito/investimentos atuais — sem filtrar por `updatedAt` do
-  // recurso (D14). Cada página é persistida (fotografia de conta) antes de devolvida.
-  readCashSources(itemId: string): Promise<HistorySource[]>
-  readCustodySources(itemId: string): Promise<HistorySource[]>
+  // recurso (D14). Cada página é persistida (fotografia de conta) antes de devolvida. `leaseGuard`
+  // (revisão do PR #14): checado antes de cada página nova buscada durante a paginação — perda de
+  // lease no meio da descoberta nunca busca a página seguinte.
+  readCashSources(itemId: string, leaseGuard: LeaseGuard | undefined): Promise<HistorySource[]>
+  readCustodySources(itemId: string, leaseGuard: LeaseGuard | undefined): Promise<HistorySource[]>
 
-  // Leitura autoritativa de contas reconcilia a fotografia atual (design.md D21) — só chamado quando
-  // `ACCOUNTS` é `isUsable` nesta execução.
-  reconcileAccounts(itemId: string, presentAccountIds: string[]): Promise<void>
+  // Commit atômico (revisão do PR #14): dentro de UMA transação, tenta avançar `pluggy_sync_progress`
+  // condicionalmente à versão e só reconcilia a fotografia atual (design.md D21) quando essa
+  // tentativa venceu a corrida — uma execução velha terminando depois de uma mais nova nunca regride
+  // a fotografia de contas. Só chamado quando `ACCOUNTS` é `isUsable` nesta execução. Devolve `false`
+  // quando perdeu a corrida (no-op).
+  commitAccountsDiscovery(itemId: string, presentAccountIds: string[], versionAt: Date): Promise<boolean>
 
   // Varre uma fonte inteira, devolvendo cada página **depois** de persistida. Quem itera é o caso de
-  // uso, que assim conclui a observação só após a última página.
-  scanSource(itemId: string, source: HistorySource): AsyncGenerator<PersistedPage>
+  // uso, que assim conclui a observação só após a última página. `leaseGuard`: checado antes de cada
+  // página nova buscada durante a varredura (revisão do PR #14) — perda de lease no meio nunca busca
+  // a página seguinte.
+  scanSource(itemId: string, source: HistorySource, leaseGuard: LeaseGuard | undefined): AsyncGenerator<PersistedPage>
 
   saveCompletedScan(itemId: string, scan: CompletedScan): Promise<void>
   assertItemAccess(itemId: string, personId: number): Promise<void>

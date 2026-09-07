@@ -95,6 +95,15 @@ export class PluggyWebhookEvent {
     return 'IGNORED'
   }
 
+  // Revisão do PR #14: um `item/updated`/`item/error` atrasado que só chega DEPOIS que o vínculo já
+  // foi marcado inativo (por um `item/deleted` já processado) nunca reativa o Item — `item/deleted`
+  // é terminal (D28), nada que chega depois dele muda esse fato. Só se aplica a `FULL_INGESTION`/
+  // `OBSERVATION_REFRESH`: `TERMINAL` e `IGNORED` não reabrem trabalho no Item de qualquer forma.
+  isMootGivenItemInactive(inactiveAt: Date | undefined): boolean {
+    const category = this.categorize()
+    return (category === 'FULL_INGESTION' || category === 'OBSERVATION_REFRESH') && inactiveAt !== undefined
+  }
+
   requireId(): number {
     if (this.id === undefined) {
       throw new ApplicationError('PLUGGY_WEBHOOK_EVENT_ID_NOT_PERSISTED', { eventId: this.eventId })

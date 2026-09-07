@@ -53,3 +53,21 @@ export function productTypeFromSource(source: PluggySource): string {
 export function dtoKeyFromSource(source: PluggySource): string {
   return CATALOG.find((row) => row.source === source)!.dtoKey
 }
+
+// `ACCOUNTS` é a única fonte com mais de um produto de origem (revisão do PR #14): `GET /accounts`
+// devolve contas `BANK` e `CREDIT` juntas, na mesma chamada, e cada tipo é habilitado por um produto
+// SEPARADO do SDK (`ACCOUNTS` para `BANK`, `CREDIT_CARDS` para cartão de crédito — com
+// `statusDetail.creditCards` correspondente). Um Item pode ter só `CREDIT_CARDS` habilitado, sem
+// `ACCOUNTS`, e ainda assim ter conta de cartão para descobrir — por isso a elegibilidade e a
+// utilizabilidade de `ACCOUNTS` precisam considerar os dois produtos, nunca só o principal. As
+// outras quatro fontes continuam 1:1 (só o produto principal).
+const ACCOUNTS_DISCOVERY_PRODUCT_TYPES = ['ACCOUNTS', 'CREDIT_CARDS']
+const ACCOUNTS_DISCOVERY_STATUS_DETAIL_KEYS = ['accounts', 'creditCards']
+
+export function discoveryProductTypesFor(source: PluggySource): string[] {
+  return source === 'ACCOUNTS' ? ACCOUNTS_DISCOVERY_PRODUCT_TYPES : [productTypeFromSource(source)]
+}
+
+export function discoveryStatusDetailKeysFor(source: PluggySource): string[] {
+  return source === 'ACCOUNTS' ? ACCOUNTS_DISCOVERY_STATUS_DETAIL_KEYS : [statusDetailKeyFromSource(source)]
+}

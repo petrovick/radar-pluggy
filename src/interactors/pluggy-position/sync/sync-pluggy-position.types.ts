@@ -160,7 +160,6 @@ export interface SyncPluggyPositionGateway extends DefaultGateway {
   // Marca d'água por (`POSITION_SYNC`, fonte) — design.md D4. `consumer` é fixo neste gateway, nunca
   // exposto ao caso de uso; nunca as mesmas linhas que `HISTORY_LOAD` usa para `INVESTMENTS`.
   readSyncProgress(itemId: string, source: PluggySource): Promise<Date | undefined>
-  advanceSyncProgress(itemId: string, source: PluggySource, versionAt: Date): Promise<void>
 
   // Verificado só quando alguma fonte está desatualizada (fronteira-pluggy regra 6: nenhuma chamada
   // nova sem mudança real). Consentimento revogado/expirado faz `GET /investments` devolver lista
@@ -170,13 +169,17 @@ export interface SyncPluggyPositionGateway extends DefaultGateway {
   saveConsentStatus(itemId: string, status: PluggyConsentStatus): Promise<void>
 
   readInvestmentsPage(itemId: string, page: number): Promise<PluggyInvestmentsPage>
-  // Fotografia + snapshot histórico numa única unidade atômica (design.md D11), e reconciliação da
-  // fotografia atual (D21) — todo investimento local que não veio nesta leitura deixa de pertencer à
-  // fotografia. A transação vive dentro do impl: o caso de uso não sabe que ela existe.
-  savePositionsWithSnapshots(itemId: string, investments: PluggyInvestmentInput[], syncedAt: Date): Promise<void>
+  // Commit atômico (revisão do PR #14, ChatGPT): dentro de UMA transação, tenta avançar
+  // `pluggy_sync_progress` condicionalmente à versão (`versionAt > completedVersion`) e só faz o
+  // upsert de fotografia + snapshot histórico (design.md D11) + reconciliação (D21) quando essa
+  // tentativa venceu a corrida — nunca separado do avanço, para que uma execução velha terminando
+  // depois de uma mais nova nunca regrida a fotografia. Devolve `false` (no-op completo, nada
+  // gravado) quando perdeu a corrida.
+  commitInvestments(itemId: string, investments: PluggyInvestmentInput[], syncedAt: Date, versionAt: Date): Promise<boolean>
 
   readLoansPage(itemId: string, page: number): Promise<PluggyLoansPage>
-  saveLoansWithSnapshots(itemId: string, loans: PluggyLoanInput[], syncedAt: Date): Promise<void>
+  // Mesma forma de `commitInvestments`, para `LOANS`.
+  commitLoans(itemId: string, loans: PluggyLoanInput[], syncedAt: Date, versionAt: Date): Promise<boolean>
 
   // Preserva, sem reinterpretação, "última ingestão completa e bem-sucedida" (design.md D5) — só
   // chamado pelo caso de uso quando `executionStatus === 'SUCCESS'`.

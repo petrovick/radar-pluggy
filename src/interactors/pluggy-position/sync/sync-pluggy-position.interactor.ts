@@ -38,6 +38,14 @@ export class SyncPluggyPositionInteractor {
     this.gateway.addContext({ messageType: 'SYNC_PLUGGY_POSITION', itemId })
 
     try {
+      // Mesma correção de `LoadPluggyHistoryInteractor` (revisão do PR #14, D16): lease já perdido
+      // ANTES de qualquer chamada, inclusive antes de `readCurrentItemState` (que já dispara
+      // `fetchItem` real via `PluggyItemStateResolver`).
+      const leaseLostUpfront = this.refuseIfLeaseLost(itemId, leaseGuard)
+      if (leaseLostUpfront) {
+        return { error: leaseLostUpfront }
+      }
+
       const item = await this.gateway.readCurrentItemState(itemId)
 
       if (item.executionStatus !== 'SUCCESS' && item.executionStatus !== 'PARTIAL_SUCCESS') {
@@ -96,9 +104,19 @@ export class SyncPluggyPositionInteractor {
         }
 
         this.gateway.logInfo('Persistindo fotografia e snapshot histórico', { positions: investmentsResult.items.length })
-        await this.gateway.savePositionsWithSnapshots(itemId, investmentsResult.items, syncedAt)
-        await this.gateway.advanceSyncProgress(itemId, 'INVESTMENTS', investmentsEval.versionAt)
-        positionsSynced = investmentsResult.items.length
+        const committed = await this.gateway.commitInvestments(
+          itemId,
+          investmentsResult.items,
+          syncedAt,
+          investmentsEval.versionAt,
+        )
+        if (committed) {
+          positionsSynced = investmentsResult.items.length
+        } else {
+          this.gateway.logInfo('Versão mais nova já aplicada por outra execução, fotografia de investimentos não regride', {
+            itemId,
+          })
+        }
       }
 
       let loansSynced = 0
@@ -119,9 +137,14 @@ export class SyncPluggyPositionInteractor {
         }
 
         this.gateway.logInfo('Persistindo empréstimos e snapshot histórico', { loans: loansResult.items.length })
-        await this.gateway.saveLoansWithSnapshots(itemId, loansResult.items, syncedAt)
-        await this.gateway.advanceSyncProgress(itemId, 'LOANS', loansEval.versionAt)
-        loansSynced = loansResult.items.length
+        const committed = await this.gateway.commitLoans(itemId, loansResult.items, syncedAt, loansEval.versionAt)
+        if (committed) {
+          loansSynced = loansResult.items.length
+        } else {
+          this.gateway.logInfo('Versão mais nova já aplicada por outra execução, fotografia de empréstimos não regride', {
+            itemId,
+          })
+        }
       }
 
       // D5: preserva, sem reinterpretação, "última ingestão completa e bem-sucedida" — nunca em

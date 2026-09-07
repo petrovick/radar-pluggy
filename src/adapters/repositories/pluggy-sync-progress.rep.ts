@@ -27,7 +27,11 @@ export class PluggySyncProgressRep {
     return row?.get().last_completed_version_at
   }
 
-  async advance(itemId: string, consumer: PluggySyncConsumer, source: PluggySource, versionAt: Date): Promise<void> {
+  // Devolve se ESTA escrita venceu a corrida de versão (linha criada, ou `UPDATE` afetou alguma
+  // linha) — quem reconcilia fotografia junto do avanço (ver `*Impl.commit*`) usa esse booleano para
+  // decidir se o upsert/reconciliação também deve rodar, na MESMA transação que este `advance`: uma
+  // execução mais antiga que perdeu a corrida nunca chega a tocar a fotografia.
+  async advance(itemId: string, consumer: PluggySyncConsumer, source: PluggySource, versionAt: Date): Promise<boolean> {
     // Valida o vocabulário fechado (consumer/source) antes de tocar o banco — recusa nomeada, nunca
     // linha com valor fora do domínio.
     PluggySyncProgress.create({ itemId, consumer, source, lastCompletedVersionAt: versionAt })
@@ -49,10 +53,10 @@ export class PluggySyncProgressRep {
     })
 
     if (created) {
-      return
+      return true
     }
 
-    await this.model.update(
+    const [updated] = await this.model.update(
       { last_completed_version_at: versionAt, updated_at: now } as Partial<PluggySyncProgressRow>,
       {
         where: {
@@ -64,6 +68,7 @@ export class PluggySyncProgressRep {
         ...options,
       },
     )
+    return updated > 0
   }
 
   private transactionOptions(): { transaction?: NonNullable<ReturnType<GetTransaction>> } {

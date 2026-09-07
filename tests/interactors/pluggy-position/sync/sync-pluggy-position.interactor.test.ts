@@ -159,9 +159,6 @@ function buildGateway(overrides: Partial<SyncPluggyPositionGateway> = {}): {
     logError: () => {},
     readCurrentItemState: async () => itemState(),
     readSyncProgress: async () => undefined,
-    advanceSyncProgress: async (_itemId, source, versionAt) => {
-      calls.advanced.push({ source, versionAt })
-    },
     readConsentStatus: async () => ({
       kind: 'ACTIVE',
       consentId: 'consent-1',
@@ -179,17 +176,21 @@ function buildGateway(overrides: Partial<SyncPluggyPositionGateway> = {}): {
       calls.investmentPages.push(requestedPage)
       return page([investment()], { page: requestedPage })
     },
-    savePositionsWithSnapshots: async (_itemId, investments, syncedAt) => {
+    commitInvestments: async (_itemId, investments, syncedAt, versionAt) => {
       calls.saved.push(investments)
       calls.savedSyncedAt.push(syncedAt)
+      calls.advanced.push({ source: 'INVESTMENTS', versionAt })
+      return true
     },
     readLoansPage: async (_itemId, requestedPage) => {
       calls.loanPages.push(requestedPage)
       return loansPage([loan()], { page: requestedPage })
     },
-    saveLoansWithSnapshots: async (_itemId, loans, syncedAt) => {
+    commitLoans: async (_itemId, loans, syncedAt, versionAt) => {
       calls.savedLoans.push(loans)
       calls.savedLoansSyncedAt.push(syncedAt)
+      calls.advanced.push({ source: 'LOANS', versionAt })
+      return true
     },
     saveSyncedItemState: async (input) => {
       calls.itemStates.push(input)
@@ -480,7 +481,7 @@ describe('SyncPluggyPositionInteractor', () => {
 
   it('falha ao persistir posição não avança a marca d’água, mas empréstimo já concluído permanece', async () => {
     const { gateway, calls } = buildGateway({
-      savePositionsWithSnapshots: async () => {
+      commitInvestments: async () => {
         throw new ApplicationError('PLUGGY_POSITION_SNAPSHOT_WRITE_FAILED', { itemId: ITEM_ID })
       },
     })
@@ -490,6 +491,18 @@ describe('SyncPluggyPositionInteractor', () => {
     expect(result.error?.errorType).toBe('PLUGGY_POSITION_SNAPSHOT_WRITE_FAILED')
     expect(calls.itemStates).toEqual([])
     expect(calls.advanced).toEqual([])
+  })
+
+  it('versão mais antiga que perde a corrida do commit nunca é contada como sincronizada, mas não é erro (revisão PR #14)', async () => {
+    const { gateway } = buildGateway({
+      commitInvestments: async () => false,
+      commitLoans: async () => false,
+    })
+
+    const result = await buildInteractor(gateway).execute({ itemId: ITEM_ID })
+
+    expect(result.error).toBeUndefined()
+    expect(result.data).toEqual({ synced: true, positionsSynced: 0, loansSynced: 0 })
   })
 
   it('erro inesperado vira erro nomeado do caso de uso, nunca vaza o erro cru', async () => {
@@ -527,6 +540,21 @@ describe('SyncPluggyPositionInteractor', () => {
     expect(calls.consentStatuses).toEqual([])
     expect(calls.investmentPages).toEqual([])
     expect(calls.saved).toEqual([])
+  })
+
+  it('revisão PR #14: lease já perdido antes de qualquer chamada nunca dispara readCurrentItemState (fetchItem real)', async () => {
+    let readCurrentItemStateCalled = false
+    const { gateway } = buildGateway({
+      readCurrentItemState: async () => {
+        readCurrentItemStateCalled = true
+        throw new Error('não deveria ser chamado com lease já perdido')
+      },
+    })
+
+    const result = await buildInteractor(gateway).execute({ itemId: ITEM_ID, leaseGuard: { isLost: () => true } })
+
+    expect(result.error?.errorType).toBe('PLUGGY_ITEM_INGESTION_LEASE_LOST')
+    expect(readCurrentItemStateCalled).toBe(false)
   })
 
   it('lease perdido no meio da varredura de investimentos interrompe antes da próxima página, sem persistir', async () => {

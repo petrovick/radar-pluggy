@@ -1,4 +1,4 @@
-import { Op, type Model, type ModelStatic } from 'sequelize'
+import { literal, Op, type Model, type ModelStatic } from 'sequelize'
 import { PluggyWebhookEvent } from '../../entities/pluggy-webhook-event.js'
 import type { AppContainer, GetTransaction } from '../../infra/bootstrap/register.js'
 import { DB_NAMES } from '../../infra/db/models.js'
@@ -82,9 +82,14 @@ export class PluggyWebhookEventRep {
       where.item_id = { [Op.notIn]: busyItemIds }
     }
 
+    // `item/deleted` (TERMINAL, `PluggyWebhookEvent.categorize()`) sempre antes de qualquer evento
+    // não-terminal pendente, mesmo mais antigo (revisão do PR #14) — sem isto, um `item/updated`
+    // preso (ex.: `fetchItem` 404 repetido) fica na frente por `id ASC` para sempre, e o
+    // `item/deleted` que marcaria o vínculo inativo nunca é sequer reivindicado. Terminal nunca
+    // chama a Pluggy, então não tem como ficar preso do mesmo jeito.
     const candidate = await this.model.findOne({
       where,
-      order: [['id', 'ASC']],
+      order: [[literal(`CASE WHEN event = 'item/deleted' THEN 0 ELSE 1 END`), 'ASC'], ['id', 'ASC']],
       ...this.transactionOptions(),
     })
     if (!candidate) {

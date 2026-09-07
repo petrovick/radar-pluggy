@@ -105,6 +105,21 @@ async function processClaimedEvent(
     }
   }
 
+  // Revisão do PR #14: um `item/updated`/`item/error` atrasado que só chega DEPOIS que o vínculo já
+  // foi marcado inativo (por um `item/deleted` já processado, inclusive antes da correção de
+  // ordenação acima) nunca reativa o Item — conclui sem `fetchItem`, sem Position, sem History.
+  // `item/deleted` é terminal (D28): nada que chega depois dele muda esse fato.
+  if (category === 'OBSERVATION_REFRESH' || category === 'FULL_INGESTION') {
+    const link = await scope.resolve('pluggyCredentialItemRep').findByItemId(itemId)
+    if (event.isMootGivenItemInactive(link?.inactiveAt)) {
+      await events.markSucceeded(event.requireId(), leaseToken)
+      logger.info('Item já inativo (item/deleted já processado) — evento atrasado concluído sem reler nem sincronizar', {
+        category,
+      })
+      return 'processed'
+    }
+  }
+
   if (category === 'OBSERVATION_REFRESH') {
     try {
       await scope.resolve('pluggyItemStateResolver').read(itemId)

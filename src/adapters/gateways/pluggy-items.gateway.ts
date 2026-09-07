@@ -1,7 +1,7 @@
 import type { PluggyClient } from 'pluggy-sdk'
 import { ApplicationError } from '../../shared/application-error.js'
 import { pluggySdkError, toIsoStringOrUndefined } from './pluggy-client.gateway.js'
-import { PLUGGY_SOURCES, statusDetailKeyFromSource } from './pluggy-source-catalog.js'
+import { PLUGGY_SOURCES, discoveryStatusDetailKeysFor } from './pluggy-source-catalog.js'
 
 // Aviso de produto do `statusDetail` (schema `StatusDetailProductWarning` da Pluggy): presente quando
 // o item vem `PARTIAL_SUCCESS` ou quando um produto tem ressalva — é o que permite distinguir
@@ -20,9 +20,11 @@ export interface PluggyProductStatus {
 // Chaves do `statusDetail` que este serviço consome — as cinco fontes do catálogo (D32), pela chave
 // que a Pluggy usa nesse payload especificamente (D7: `investmentTransactions`, singular em
 // Investment, é a chave real; `investmentsTransactions` — o código antigo — nunca batia).
-export type PluggyProductKey = 'accounts' | 'transactions' | 'investments' | 'investmentTransactions' | 'loans'
+// `creditCards` (revisão do PR #14): segundo produto de origem de `ACCOUNTS` — um Item pode ter só
+// `CREDIT_CARDS` habilitado, sem `ACCOUNTS`, e `statusDetail.creditCards` é onde a Pluggy relata isso.
+export type PluggyProductKey = 'accounts' | 'creditCards' | 'transactions' | 'investments' | 'investmentTransactions' | 'loans'
 
-const PRODUCT_KEYS = PLUGGY_SOURCES.map((source) => statusDetailKeyFromSource(source)) as PluggyProductKey[]
+const PRODUCT_KEYS = PLUGGY_SOURCES.flatMap((source) => discoveryStatusDetailKeysFor(source)) as PluggyProductKey[]
 
 // Identidade da instituição, embutida em todo `GET /items/{id}` (design.md D8) — inclui os produtos
 // que ELA suporta (`connectorProducts`, D19), distintos dos habilitados neste Item (`itemProducts`,

@@ -37,6 +37,64 @@ describe('pluggy-source-state', () => {
       expect(enabledForItem(undefined, 'ACCOUNTS')).toBeUndefined()
       expect(isEligible(undefined, 'ACCOUNTS')).toBe(false)
     })
+
+    // Revisão do PR #14: CREDIT_CARDS é o segundo produto de origem de ACCOUNTS — GET /accounts
+    // devolve conta BANK e CREDIT juntas, e um Item pode ter só CREDIT_CARDS habilitado.
+    it('CREDIT_CARDS habilitado, sem ACCOUNTS: ACCOUNTS ainda é elegível', () => {
+      expect(enabledForItem(['CREDIT_CARDS', 'TRANSACTIONS'], 'ACCOUNTS')).toBe(true)
+      expect(isEligible(['CREDIT_CARDS', 'TRANSACTIONS'], 'ACCOUNTS')).toBe(true)
+    })
+
+    it('nem ACCOUNTS nem CREDIT_CARDS habilitado: ACCOUNTS não é elegível', () => {
+      expect(enabledForItem(['TRANSACTIONS'], 'ACCOUNTS')).toBe(false)
+      expect(isEligible(['TRANSACTIONS'], 'ACCOUNTS')).toBe(false)
+    })
+  })
+
+  describe('CREDIT_CARDS como segundo produto de origem de ACCOUNTS (revisão do PR #14)', () => {
+    function itemWithCreditCards(executionStatus: string, isUpdated?: boolean, lastUpdatedAt?: string) {
+      return {
+        executionStatus,
+        products: isUpdated === undefined ? {} : { creditCards: { isUpdated, lastUpdatedAt, warnings: [] } },
+      }
+    }
+
+    it('PARTIAL_SUCCESS com só creditCards presente (sem accounts): utilizável quando creditCards está atualizado', () => {
+      const item = itemWithCreditCards('PARTIAL_SUCCESS', true, '2026-08-05T00:00:00.000Z')
+      expect(toSourceState(item, 'ACCOUNTS')).toEqual({ isUsable: true, lastUpdatedAt: '2026-08-05T00:00:00.000Z' })
+    })
+
+    it('PARTIAL_SUCCESS com só creditCards presente e não atualizado: não utilizável', () => {
+      const item = itemWithCreditCards('PARTIAL_SUCCESS', false)
+      expect(toSourceState(item, 'ACCOUNTS').isUsable).toBe(false)
+    })
+
+    it('PARTIAL_SUCCESS com accounts E creditCards, só um atualizado: fonte inteira não utilizável', () => {
+      const item = {
+        executionStatus: 'PARTIAL_SUCCESS',
+        products: {
+          accounts: { isUpdated: true, lastUpdatedAt: '2026-08-01T00:00:00.000Z', warnings: [] },
+          creditCards: { isUpdated: false, lastUpdatedAt: undefined, warnings: [] },
+        },
+      }
+      expect(toSourceState(item, 'ACCOUNTS').isUsable).toBe(false)
+    })
+
+    it('PARTIAL_SUCCESS com accounts E creditCards, ambos atualizados: versão é a mais recente das duas', () => {
+      const item = {
+        executionStatus: 'PARTIAL_SUCCESS',
+        products: {
+          accounts: { isUpdated: true, lastUpdatedAt: '2026-08-01T00:00:00.000Z', warnings: [] },
+          creditCards: { isUpdated: true, lastUpdatedAt: '2026-08-10T00:00:00.000Z', warnings: [] },
+        },
+      }
+      expect(toSourceState(item, 'ACCOUNTS')).toEqual({ isUsable: true, lastUpdatedAt: '2026-08-10T00:00:00.000Z' })
+    })
+
+    it('toVersionAt com só creditCards presente grava statusDetail.creditCards.lastUpdatedAt', () => {
+      const item = { ...itemWithCreditCards('PARTIAL_SUCCESS', true, '2026-08-05T00:00:00.000Z'), lastUpdatedAt: undefined, updatedAt: '2026-07-01T00:00:00.000Z' }
+      expect(toVersionAt(item, 'ACCOUNTS', 'item-1')).toEqual(new Date('2026-08-05T00:00:00.000Z'))
+    })
   })
 
   describe('toVersionAt', () => {

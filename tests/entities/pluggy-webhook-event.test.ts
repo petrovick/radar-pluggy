@@ -108,3 +108,33 @@ describe('PluggyWebhookEvent.categorize', () => {
     expect(eventOfType('ITEM/UPDATED').categorize()).toBe('IGNORED')
   })
 })
+
+// Revisão do PR #14: um `item/updated`/`item/error` atrasado que só chega depois do `item/deleted`
+// já ter marcado o vínculo inativo nunca reativa o Item — a decisão é da entidade, não do worker.
+describe('PluggyWebhookEvent.isMootGivenItemInactive', () => {
+  function eventOfType(event: string): PluggyWebhookEvent {
+    return PluggyWebhookEvent.create({ eventId: 'evt-1', itemId: 'item-1', event })
+  }
+
+  it.each(['item/created', 'item/updated', 'item/error', 'item/waiting_user_input'])(
+    '%s com item já inativo é moot',
+    (event) => {
+      expect(eventOfType(event).isMootGivenItemInactive(new Date('2026-08-01T00:00:00.000Z'))).toBe(true)
+    },
+  )
+
+  it.each(['item/created', 'item/updated', 'item/error', 'item/waiting_user_input'])(
+    '%s com item ainda ativo (inactiveAt undefined) nunca é moot',
+    (event) => {
+      expect(eventOfType(event).isMootGivenItemInactive(undefined)).toBe(false)
+    },
+  )
+
+  it('item/deleted (TERMINAL) nunca é moot — quem marca inativo é ele mesmo', () => {
+    expect(eventOfType('item/deleted').isMootGivenItemInactive(new Date('2026-08-01T00:00:00.000Z'))).toBe(false)
+  })
+
+  it('evento IGNORED nunca é moot — não faz sentido a pergunta', () => {
+    expect(eventOfType('connector/status_updated').isMootGivenItemInactive(new Date('2026-08-01T00:00:00.000Z'))).toBe(false)
+  })
+})

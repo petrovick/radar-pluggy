@@ -1,6 +1,8 @@
 import { describe, expect, it } from 'vitest'
 import {
   PLUGGY_SOURCES,
+  discoveryProductTypesFor,
+  discoveryStatusDetailKeysFor,
   dtoKeyFromSource,
   productTypeFromSource,
   sourceFromProductType,
@@ -59,5 +61,22 @@ describe('pluggy-source-catalog', () => {
     expect(sourceFromStatusDetailKey('INVESTMENTS_TRANSACTIONS')).toBeUndefined()
     // `investmentTransactions` (statusDetail) não é um productType válido.
     expect(sourceFromProductType('investmentTransactions')).toBeUndefined()
+  })
+
+  // Revisão do PR #14: ACCOUNTS é a única fonte com dois produtos de origem (GET /accounts devolve
+  // BANK e CREDIT juntos, habilitados por ACCOUNTS e CREDIT_CARDS respectivamente).
+  describe('discoveryProductTypesFor / discoveryStatusDetailKeysFor', () => {
+    it('ACCOUNTS tem dois produtos de origem: ACCOUNTS e CREDIT_CARDS', () => {
+      expect(discoveryProductTypesFor('ACCOUNTS')).toEqual(['ACCOUNTS', 'CREDIT_CARDS'])
+      expect(discoveryStatusDetailKeysFor('ACCOUNTS')).toEqual(['accounts', 'creditCards'])
+    })
+
+    it.each(['ACCOUNT_TRANSACTIONS', 'INVESTMENTS', 'INVESTMENT_TRANSACTIONS', 'LOANS'] as PluggySource[])(
+      '%s continua com um produto de origem só',
+      (source) => {
+        expect(discoveryProductTypesFor(source)).toEqual([productTypeFromSource(source)])
+        expect(discoveryStatusDetailKeysFor(source)).toEqual([statusDetailKeyFromSource(source)])
+      },
+    )
   })
 })

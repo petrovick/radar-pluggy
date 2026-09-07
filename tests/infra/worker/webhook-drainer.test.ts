@@ -41,6 +41,7 @@ function buildContainer(
     position?: unknown
     history?: unknown
     itemLeaseBusyFor?: Set<string>
+    inactiveItemIds?: Set<string>
   } = {},
 ) {
   const calls: Calls = {
@@ -113,6 +114,10 @@ function buildContainer(
           markInactive: async (itemId: string) => {
             recordContext()
             calls.markedInactive.push(itemId)
+          },
+          findByItemId: async (itemId: string) => {
+            const inactiveAt = outcomes.inactiveItemIds?.has(itemId) ? new Date('2026-09-01T00:00:00.000Z') : undefined
+            return { itemId, inactiveAt }
           },
         }
       }
@@ -228,6 +233,36 @@ describe('drainPluggyWebhookEvents', () => {
     expect(calls.markedInactive).toEqual([ITEM_ID])
     expect(calls.ran).toEqual([])
     expect(calls.succeeded).toEqual([3])
+  })
+
+  // Revisão do PR #14: `item/deleted` é terminal — um evento não-terminal atrasado do MESMO item
+  // (chegando depois que o vínculo já foi marcado inativo, inclusive por um `item/deleted` de uma
+  // passada anterior) nunca reativa o Item nem gasta uma chamada real à Pluggy.
+  it('item já inativo: item/updated atrasado conclui sem fetchItem, sem Position, sem History', async () => {
+    const { container, calls } = buildContainer([event(5, 'item/updated'), undefined], {
+      inactiveItemIds: new Set([ITEM_ID]),
+    })
+
+    const processed = await drainPluggyWebhookEvents(container, 'WEBHOOK')
+
+    expect(processed).toBe(1)
+    expect(calls.succeeded).toEqual([5])
+    expect(calls.ran).toEqual([])
+    expect(calls.observationsRefreshed).toEqual([])
+    expect(calls.itemLeaseAcquired).toEqual([])
+    expect(calls.markedInactive).toEqual([])
+  })
+
+  it('item já inativo: item/error (OBSERVATION_REFRESH) atrasado conclui sem reler o estado observado', async () => {
+    const { container, calls } = buildContainer([event(6, 'item/error'), undefined], {
+      inactiveItemIds: new Set([ITEM_ID]),
+    })
+
+    const processed = await drainPluggyWebhookEvents(container, 'WEBHOOK')
+
+    expect(processed).toBe(1)
+    expect(calls.succeeded).toEqual([6])
+    expect(calls.observationsRefreshed).toEqual([])
   })
 
   it('OBSERVATION_REFRESH (item/error) só releem o estado observado, sem lease nem Position/History', async () => {
