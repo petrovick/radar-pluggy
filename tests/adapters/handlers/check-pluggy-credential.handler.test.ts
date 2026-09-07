@@ -59,6 +59,21 @@ describe('checkPluggyCredentialHandler', () => {
     expect(res.json).toHaveBeenCalledWith({ hasCredential: false })
   })
 
+  it('falha inesperada do interactor (banco fora do ar) vira 500 nomeado, nunca hasCredential:false', async () => {
+    const execute = vi
+      .fn()
+      .mockResolvedValue({ error: new ApplicationError('PLUGGY_CREDENTIAL_CHECK_FAILED', { personId: 1 }) })
+    const res = fakeResponse()
+
+    await checkPluggyCredentialHandler(fakeRequest(execute, 1), res)
+
+    expect(res.status).toHaveBeenCalledWith(500)
+    expect(res.json).toHaveBeenCalledWith({
+      errorType: 'PLUGGY_CREDENTIAL_CHECK_FAILED',
+      extras: { personId: 1 },
+    })
+  })
+
   it('responde 500 nomeado quando req.personId está ausente, sem chamar o interactor', async () => {
     const execute = vi.fn()
     const res = fakeResponse()
