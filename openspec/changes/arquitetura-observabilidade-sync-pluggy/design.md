@@ -503,10 +503,21 @@ divergirem. A garantia é mais fraca só num cenário específico: duas instânc
 heartbeat e uma escrita pendente pelo mesmo tanto — reduzido pelo heartbeat, mas não formalmente
 impossível sem propagar o `fencing_token` para dentro de cada escrita de `pluggy-sync-progress`/
 reconciliação (o que exigiria acoplar os dois interactors ao lease, custo maior que o problema real
-que motivou o pedido). Por isso: **o lease evita trabalho duplicado e chamadas desnecessárias — quem
-garante que o dado nunca fica corrompido mesmo numa sobreposição residual é a escrita atômica de D17**,
-que não depende do lease para estar correta. A promessa da capability é ajustada para refletir
-exatamente isso (ver spec `pluggy-ingestion-coordination`).
+que motivou o pedido). Por isso: **quem garante que o dado nunca fica corrompido mesmo numa
+sobreposição residual é a escrita atômica de D17**, que não depende do lease para estar correta.
+
+**Revisão desta rodada — invariante exigido explicitamente para a implementação**: além do heartbeat
+renovar, `renew()` que devolve `false` (posse perdida — outro trigger já reivindicou o lease vencido)
+agora também impede o dono antigo de INICIAR mais trabalho para a execução corrente, mesmo que D17 já
+garanta que esse trabalho nunca corromperia dado. `AcquiredIngestionLease.guard` (`LeaseGuard`,
+`src/shared/lease-guard.ts`) é um sinalizador em memória, atualizado pelo próprio heartbeat, passado a
+`SyncPluggyPositionInteractor`/`LoadPluggyHistoryInteractor` via `leaseGuard` opcional no input.
+Checado nos pontos onde o caso de uso decidiria começar mais uma página, mais uma chamada ou um commit
+destrutivo (`savePositionsWithSnapshots`/`saveLoansWithSnapshots`/`reconcileAccounts`) — nunca aborta o
+que já está em voo (uma chamada já iniciada antes da perda ser detectada termina normalmente; sua
+escrita continua protegida só por D17). Continua sendo um mecanismo de custo/desperdício, não de
+integridade: correção do dado nunca depende dele, só D17 garante isso. Ausência de `leaseGuard`
+(chamador não detém lease) nunca é tratada como perda — o caso de uso roda como sempre rodou.
 
 **Alternativa descartada**: opção 1 (fila de ingestão única) — descartada porque exigiria mudar o
 contrato síncrono da rota manual, mudança que ninguém pediu; documentada aqui porque foi cogitada e
@@ -522,7 +533,11 @@ descartada porque duas aquisições podem cair no mesmo milissegundo (resoluçã
 clássico de Kleppmann) — cogitada e adiada: fecharia o gap residual entre processos diferentes, mas
 acopla dois interactors independentes ao mecanismo de lease só para um cenário que já é mitigado pelo
 heartbeat e coberto, para integridade de dado, por D17; revisitar se o serviço passar a escalar
-horizontalmente de um jeito que torne esse gap residual observável na prática.
+horizontalmente de um jeito que torne esse gap residual observável na prática. `LeaseGuard` (acima) é
+mais barato que esta alternativa porque não entra na escrita nem no banco: é só um sinalizador em
+memória lido pelo caso de uso antes de decidir começar mais trabalho — não fecha o gap entre processos
+(continua sendo D17 quem fecha), só reduz o desperdício de trabalho feito depois da perda já detectada
+no mesmo processo.
 
 ### D17 — Toda marca d'água/observação é escrita com condição atômica no banco, nunca "ler, validar em memória, escrever"
 `PluggyItemRep.save`, `PluggyHistorySyncStateRep.save` e `PluggyHistoryCoverageRep.save` (todos já em
@@ -893,10 +908,11 @@ hoje não o usa.
 
 Fluxo do handler:
 ```
+fencingToken = tryAcquire(itemId, 'MANUAL_HISTORY_LOAD', ttl)
+se não conseguiu: responde recusa nomeada, retorna
+inicia heartbeat (renew a cada ttl/3)
+
 runWithCallContext({trigger: 'MANUAL_HISTORY_LOAD', requestCorrelationId}, async () => {
-  fencingToken = tryAcquire(itemId, 'MANUAL_HISTORY_LOAD', ttl)
-  se não conseguiu: responde recusa nomeada, retorna
-  inicia heartbeat (renew a cada ttl/3)
   history = await LoadPluggyHistoryInteractor.execute(...)
   responde HTTP com history (lease e heartbeat continuam vivos)
   syncPluggyPositionInBackground(...)      // síncrono aqui dentro — herda o contexto
@@ -907,6 +923,15 @@ runWithCallContext({trigger: 'MANUAL_HISTORY_LOAD', requestCorrelationId}, async
 O `fencingToken` é uma variável capturada por closure, compartilhada entre a chamada síncrona de
 History e a continuação de Position — não precisa passar por `AsyncLocalStorage`, só o contexto de
 observabilidade (`trigger`/`requestCorrelationId`) precisa.
+
+**Ajuste desta rodada**: `tryAcquire`/o início do heartbeat ficam FORA do `runWithCallContext` — a
+implementação revelou que colocá-los dentro (como a versão anterior deste documento mostrava) acopla a
+garantia "lease já adquirido é sempre liberado" ao sucesso de `resolve('requestId')`, que só existe
+para preencher o `requestCorrelationId` do contexto de observabilidade. `tryAcquire`/`renew`/`release`
+nunca chamam a Pluggy nem geram linha em `radar_pluggy_calls` — não precisam do contexto —, então
+adquirir o lease antes de abrir o `runWithCallContext` preserva essa garantia sem perder nada: o
+contexto ainda cobre tudo que de fato chama a Pluggy (a leitura de History e a continuação de
+Position).
 
 **Alternativa descartada**: liberar o lease logo após History responder, antes de Position rodar —
 descartada porque reabriria a janela de corrida que D16 fecha: um webhook para o mesmo item poderia

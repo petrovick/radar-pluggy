@@ -5,7 +5,7 @@ import { PluggyItemRep } from '../../../src/adapters/repositories/pluggy-item.re
 import type { AppContainer } from '../../../src/infra/bootstrap/register.js'
 import { createDatabaseConnection } from '../../../src/infra/db/database.js'
 import { testDatabaseConfig } from '../../support/test-database-config.js'
-import { ApplicationError } from '../../../src/shared/application-error.js'
+import { PluggyItem } from '../../../src/entities/pluggy-item.js'
 
 // Requer MySQL alcançável, mesma infraestrutura do teste de contrato — ver aquele arquivo.
 describe('PluggyItemRep.save', () => {
@@ -53,7 +53,7 @@ describe('PluggyItemRep.save', () => {
     expect(rows[0]?.get('execution_status')).toBe('SUCCESS')
   })
 
-  it('watermark que retrocede é recusado pelo caminho real de persistência, sem alterar a linha', async () => {
+  it('watermark que retrocede é ignorado silenciosamente (no-op), nunca erro (design.md D17)', async () => {
     const itemId = randomUUID()
     itemIdsToCleanup.push(itemId)
     const first = new Date('2026-08-01T00:00:00.000Z')
@@ -68,11 +68,33 @@ describe('PluggyItemRep.save', () => {
     })
 
     await expect(
-      repository.save({ itemId, personId: 1, status: 'UPDATED', executionStatus: undefined, lastUpdatedAt: earlier }),
-    ).rejects.toBeInstanceOf(ApplicationError)
+      repository.save({ itemId, personId: 1, status: 'OUTDATED', executionStatus: undefined, lastUpdatedAt: earlier }),
+    ).resolves.toBeInstanceOf(PluggyItem)
 
     const row = await model.findOne({ where: { item_id: itemId } })
     expect(row?.get('last_updated_at')).toEqual(first)
+    // A escrita inteira (não só a watermark) é recusada junto: `status` também não regride.
+    expect(row?.get('status')).toBe('UPDATED')
+  })
+
+  it('duas escritas concorrentes com versões diferentes: a mais nova sempre prevalece, independente da ordem de conclusão (D17)', async () => {
+    const itemId = randomUUID()
+    itemIdsToCleanup.push(itemId)
+    const older = new Date('2026-08-01T00:00:00.000Z')
+    const newer = new Date('2026-08-02T00:00:00.000Z')
+
+    await repository.save({ itemId, personId: 1, status: 'UPDATED', executionStatus: undefined, lastUpdatedAt: undefined })
+
+    // Duas execuções disparadas antes de aguardar qualquer uma — a ordem de CONCLUSÃO é invertida em
+    // relação à ordem de "quem tem a versão mais nova" (a mais nova é disparada primeiro aqui, mas o
+    // que importa é que ambas corram de fato em paralelo, não a ordem de disparo).
+    await Promise.all([
+      repository.save({ itemId, personId: 1, status: 'UPDATED', executionStatus: 'SUCCESS', lastUpdatedAt: newer }),
+      repository.save({ itemId, personId: 1, status: 'UPDATED', executionStatus: 'SUCCESS', lastUpdatedAt: older }),
+    ])
+
+    const row = await model.findOne({ where: { item_id: itemId } })
+    expect(row?.get('last_updated_at')).toEqual(newer)
   })
 
   it('findByItemId devolve o item persistido, e undefined para itemId inexistente', async () => {

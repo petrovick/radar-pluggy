@@ -1,5 +1,5 @@
 import { Decimal } from 'decimal.js'
-import type { Model, ModelStatic } from 'sequelize'
+import { Op, type Model, type ModelStatic } from 'sequelize'
 import { PluggyLoan } from '../../entities/pluggy-loan.js'
 import type { AppContainer, GetTransaction } from '../../infra/bootstrap/register.js'
 import { DB_NAMES } from '../../infra/db/models.js'
@@ -107,6 +107,18 @@ export class PluggyLoanRep {
 
     await row.update(toRow(draft, now), transaction ? { transaction } : {})
     return draft
+  }
+
+  // Reconciliação de fotografia atual (design.md D21): todo empréstimo local daquele Item cujo
+  // `loanId` não veio na leitura autoritativa atual deixa de pertencer à fotografia. Chamado só
+  // quando `LOANS` é `isUsable` nesta execução.
+  async reconcile(itemId: string, presentLoanIds: string[]): Promise<number> {
+    const transaction = this.getTransaction(DB_NAMES.MAIN)
+    const where: Record<string, unknown> = { item_id: itemId }
+    if (presentLoanIds.length > 0) {
+      where.loan_id = { [Op.notIn]: presentLoanIds }
+    }
+    return this.model.destroy({ where, ...(transaction ? { transaction } : {}) })
   }
 }
 

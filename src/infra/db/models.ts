@@ -13,8 +13,11 @@ import { definePluggyAccountModel } from './models/pluggy-account-model.js'
 import { definePluggyAccountTransactionModel } from './models/pluggy-account-transaction-model.js'
 import { definePluggyInvestmentTransactionModel } from './models/pluggy-investment-transaction-model.js'
 import { definePluggyHistoryCoverageModel } from './models/pluggy-history-coverage-model.js'
-import { definePluggyHistorySyncStateModel } from './models/pluggy-history-sync-state-model.js'
+import { definePluggySyncProgressModel } from './models/pluggy-sync-progress-model.js'
 import { definePluggyWebhookEventModel } from './models/pluggy-webhook-event-model.js'
+import { definePluggyItemIngestionLeaseModel } from './models/pluggy-item-ingestion-lease-model.js'
+import { definePluggyItemObservationModel } from './models/pluggy-item-observation-model.js'
+import { definePluggyCallModel } from './models/pluggy-call-model.js'
 import { definePluggyConsentModel } from './models/pluggy-consent-model.js'
 import { definePluggyItemRawModel } from './models/pluggy-item-raw-model.js'
 import { definePluggyConsentRawModel } from './models/pluggy-consent-raw-model.js'
@@ -43,8 +46,11 @@ export type ModelMap = {
   pluggyAccountTransaction: ReturnType<typeof definePluggyAccountTransactionModel>
   pluggyInvestmentTransaction: ReturnType<typeof definePluggyInvestmentTransactionModel>
   pluggyHistoryCoverage: ReturnType<typeof definePluggyHistoryCoverageModel>
-  pluggyHistorySyncState: ReturnType<typeof definePluggyHistorySyncStateModel>
+  pluggySyncProgress: ReturnType<typeof definePluggySyncProgressModel>
   pluggyWebhookEvent: ReturnType<typeof definePluggyWebhookEventModel>
+  pluggyItemIngestionLease: ReturnType<typeof definePluggyItemIngestionLeaseModel>
+  pluggyItemObservation: ReturnType<typeof definePluggyItemObservationModel>
+  pluggyCall: ReturnType<typeof definePluggyCallModel>
   pluggyConsent: ReturnType<typeof definePluggyConsentModel>
   pluggyItemRaw: ReturnType<typeof definePluggyItemRawModel>
   pluggyConsentRaw: ReturnType<typeof definePluggyConsentRawModel>
@@ -86,8 +92,11 @@ export function loadModels(config: DatabaseConnectionConfig): DB {
       pluggyAccountTransaction: definePluggyAccountTransactionModel(main),
       pluggyInvestmentTransaction: definePluggyInvestmentTransactionModel(main),
       pluggyHistoryCoverage: definePluggyHistoryCoverageModel(main),
-      pluggyHistorySyncState: definePluggyHistorySyncStateModel(main),
+      pluggySyncProgress: definePluggySyncProgressModel(main),
       pluggyWebhookEvent: definePluggyWebhookEventModel(main),
+      pluggyItemIngestionLease: definePluggyItemIngestionLeaseModel(main),
+      pluggyItemObservation: definePluggyItemObservationModel(main),
+      pluggyCall: definePluggyCallModel(main),
       pluggyConsent: definePluggyConsentModel(main),
       pluggyItemRaw: definePluggyItemRawModel(main),
       pluggyConsentRaw: definePluggyConsentRawModel(main),

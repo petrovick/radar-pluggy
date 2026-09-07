@@ -17,9 +17,9 @@ describe('PluggyWebhookEventRep', () => {
   } as unknown as AppContainer)
   const eventIdsToCleanup: string[] = []
 
-  function enqueueInput(itemId: string, eventId = randomUUID()) {
+  function enqueueInput(itemId: string, eventId = randomUUID(), event = 'item/updated') {
     eventIdsToCleanup.push(eventId)
-    return { eventId, itemId, event: 'item/updated' }
+    return { eventId, itemId, event }
   }
 
   afterEach(async () => {
@@ -145,6 +145,34 @@ describe('PluggyWebhookEventRep', () => {
 
     expect(escreveu).toBe(false)
     expect((await repository.findByEventId(input.eventId))?.getState()).toBe('PROCESSING')
+  })
+
+  // Revisão do PR #14: sem a prioridade de `item/deleted`, um `item/updated` mais antigo (id menor)
+  // preso repetidamente à frente na fila por `id ASC` nunca deixaria o `item/deleted` do MESMO item
+  // ser sequer reivindicado.
+  it('item/deleted é reivindicado antes de um item/updated mais antigo (id menor) do mesmo item', async () => {
+    const itemId = randomUUID()
+    const updated = enqueueInput(itemId, randomUUID(), 'item/updated')
+    await repository.enqueue(updated)
+    const deleted = enqueueInput(itemId, randomUUID(), 'item/deleted')
+    await repository.enqueue(deleted)
+
+    const claimed = await repository.claimNextPending()
+
+    expect(claimed?.event.getEventId()).toBe(deleted.eventId)
+    expect(claimed?.event.getEvent()).toBe('item/deleted')
+  })
+
+  it('item/deleted é reivindicado antes de um item/updated mais antigo de OUTRO item, mesmo com id maior', async () => {
+    const outroItem = randomUUID()
+    const updated = enqueueInput(outroItem, randomUUID(), 'item/updated')
+    await repository.enqueue(updated)
+    const deleted = enqueueInput(randomUUID(), randomUUID(), 'item/deleted')
+    await repository.enqueue(deleted)
+
+    const claimed = await repository.claimNextPending()
+
+    expect(claimed?.event.getEventId()).toBe(deleted.eventId)
   })
 
   it('sucesso limpa o erro anterior e sai da fila de pendentes', async () => {

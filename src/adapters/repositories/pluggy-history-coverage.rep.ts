@@ -1,4 +1,4 @@
-import type { Model, ModelStatic } from 'sequelize'
+import { Op, type Model, type ModelStatic } from 'sequelize'
 import type { AppContainer, GetTransaction } from '../../infra/bootstrap/register.js'
 import { DB_NAMES } from '../../infra/db/models.js'
 import { PluggyHistoryCoverage } from '../../entities/pluggy-history-coverage.js'
@@ -24,6 +24,12 @@ export class PluggyHistoryCoverageRep {
     this.getTransaction = params.getTransaction
   }
 
+  // Escrita condicional no banco (design.md D17), mesmo idioma de `PluggyItemRep.save`: nunca "ler,
+  // decidir em memória, escrever". Versão primária é `source_updated_at` (quando a chamada o
+  // fornece) — uma varredura mais antiga nunca sobrescreve uma mais nova, mesmo terminando depois.
+  // Sem `source_updated_at` (D14: deixou de ser condição necessária para decidir *se* varre, mas
+  // continua registrado quando disponível), o fallback é `last_completed_scan_at` — mesmo raciocínio
+  // de D17. Zero linhas afetadas é no-op esperado, nunca erro.
   async save(input: SavePluggyHistoryCoverageInput): Promise<PluggyHistoryCoverage> {
     const draft = PluggyHistoryCoverage.create({
       itemId: input.itemId,
@@ -38,22 +44,47 @@ export class PluggyHistoryCoverageRep {
       }),
     })
     const now = new Date()
+    const options = this.transactionOptions()
 
-    const [row, created] = await this.model.findOrCreate({
+    const [, created] = await this.model.findOrCreate({
       where: {
         item_id: draft.getItemId(),
         reference_type: draft.getReferenceType(),
         reference_id: draft.getReferenceId(),
       },
       defaults: toRow(draft, now),
-      ...this.transactionOptions(),
+      ...options,
     })
 
-    if (!created) {
-      await row.update(toRow(draft, now), this.transactionOptions())
+    if (created) {
+      return draft
     }
 
-    return draft
+    const versionGuard =
+      draft.getSourceUpdatedAt() !== undefined
+        ? {
+            [Op.or]: [
+              { source_updated_at: { [Op.is]: null } },
+              { source_updated_at: { [Op.lt]: draft.getSourceUpdatedAt() } },
+            ],
+          }
+        : { [Op.or]: [{ last_completed_scan_at: { [Op.lt]: draft.getLastCompletedScanAt() } }] }
+
+    await this.model.update(toRow(draft, now), {
+      where: {
+        item_id: draft.getItemId(),
+        reference_type: draft.getReferenceType(),
+        reference_id: draft.getReferenceId(),
+        ...versionGuard,
+      },
+      ...options,
+    })
+
+    const persisted = await this.model.findOne({
+      where: { item_id: draft.getItemId(), reference_type: draft.getReferenceType(), reference_id: draft.getReferenceId() },
+      ...options,
+    })
+    return persisted ? toEntity(persisted.get({ plain: true })) : draft
   }
 
   async findByReference(

@@ -1,4 +1,4 @@
-import { Op, type Model, type ModelStatic } from 'sequelize'
+import { literal, Op, type Model, type ModelStatic } from 'sequelize'
 import { PluggyWebhookEvent } from '../../entities/pluggy-webhook-event.js'
 import type { AppContainer, GetTransaction } from '../../infra/bootstrap/register.js'
 import { DB_NAMES } from '../../infra/db/models.js'
@@ -62,22 +62,34 @@ export class PluggyWebhookEventRep {
   // exige PROVAR posse: se o lease vencer com o worker ainda vivo e outro reivindicar o mesmo evento,
   // o token muda, e a escrita do worker atrasado não encontra linha para atualizar — em vez de os dois
   // sobrescreverem o estado um do outro em silêncio (achado do engenheiro-pluggy-connector).
-  async claimNextPending(now = new Date()): Promise<{ event: PluggyWebhookEvent; leaseToken: Date } | undefined> {
+  // `excludeItemIds` (tasks.md 7.4): itens que a MESMA passada de drenagem já determinou ocupados
+  // pelo lease de ingestão compartilhado (`PluggyItemIngestionLeaseRep`, D16) — sem isso, devolver um
+  // evento a `PENDING` por lease ocupado faria a próxima iteração reivindicar o MESMO evento de novo,
+  // girando no mesmo item preso em vez de seguir para um candidato de item diferente.
+  async claimNextPending(
+    now = new Date(),
+    excludeItemIds: string[] = [],
+  ): Promise<{ event: PluggyWebhookEvent; leaseToken: Date } | undefined> {
     const busyItems = await this.model.findAll({
       attributes: ['item_id'],
       where: { state: 'PROCESSING', lease_until: { [Op.gt]: now } },
       ...this.transactionOptions(),
     })
-    const busyItemIds = busyItems.map((row) => row.get('item_id'))
+    const busyItemIds = [...new Set([...busyItems.map((row) => row.get('item_id')), ...excludeItemIds])]
 
     const where: Record<string, unknown> = { state: 'PENDING' }
     if (busyItemIds.length > 0) {
       where.item_id = { [Op.notIn]: busyItemIds }
     }
 
+    // `item/deleted` (TERMINAL, `PluggyWebhookEvent.categorize()`) sempre antes de qualquer evento
+    // não-terminal pendente, mesmo mais antigo (revisão do PR #14) — sem isto, um `item/updated`
+    // preso (ex.: `fetchItem` 404 repetido) fica na frente por `id ASC` para sempre, e o
+    // `item/deleted` que marcaria o vínculo inativo nunca é sequer reivindicado. Terminal nunca
+    // chama a Pluggy, então não tem como ficar preso do mesmo jeito.
     const candidate = await this.model.findOne({
       where,
-      order: [['id', 'ASC']],
+      order: [[literal(`CASE WHEN event = 'item/deleted' THEN 0 ELSE 1 END`), 'ASC'], ['id', 'ASC']],
       ...this.transactionOptions(),
     })
     if (!candidate) {

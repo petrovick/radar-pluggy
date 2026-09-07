@@ -28,8 +28,16 @@ describe('PluggyItem', () => {
     }
   })
 
-  it('aceita cada um dos 5 valores documentados de status', () => {
-    for (const status of ['UPDATING', 'LOGIN_ERROR', 'OUTDATED', 'WAITING_USER_INPUT', 'UPDATED']) {
+  it('aceita cada um dos 7 valores documentados de status', () => {
+    for (const status of [
+      'UPDATING',
+      'LOGIN_ERROR',
+      'OUTDATED',
+      'WAITING_USER_INPUT',
+      'WAITING_USER_ACTION',
+      'MERGING',
+      'UPDATED',
+    ]) {
       const item = PluggyItem.create({ itemId: 'item-1', personId: 1, status })
       expect(item.getStatus()).toBe(status)
     }

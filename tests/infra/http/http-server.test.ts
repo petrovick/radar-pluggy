@@ -4,7 +4,10 @@ import { afterEach, describe, expect, it } from 'vitest'
 import { createHttpServer } from '../../../src/infra/http/http-server.js'
 import type { AppContainerInstance } from '../../../src/infra/bootstrap/register.js'
 import type { RegisterPluggyCredentialOutput } from '../../../src/interactors/pluggy-credential/register/register-pluggy-credential.types.js'
-import type { CheckPluggyCredentialOutput } from '../../../src/interactors/pluggy-credential/check/check-pluggy-credential.types.js'
+import type {
+  CheckPluggyCredentialOutput,
+  CredentialStatusItem,
+} from '../../../src/interactors/pluggy-credential/check/check-pluggy-credential.types.js'
 import type { CheckHealthOutput } from '../../../src/interactors/health/check/check-health.types.js'
 import { ApplicationError } from '../../../src/shared/application-error.js'
 
@@ -51,13 +54,29 @@ describe('createHttpServer', () => {
         execute: options.register ?? (async () => ({ data: { credentialId: 9 } })),
       },
       checkHealthInteractor: { execute: options.checkHealth ?? (async () => ({ data: { running: true } })) },
-      checkPluggyCredentialInteractor: { execute: options.checkCredential ?? (async () => ({ data: {} })) },
+      checkPluggyCredentialInteractor: { execute: options.checkCredential ?? (async () => ({ data: { items: [] } })) },
+      // Pré-carga do cadastro (tasks.md 7.5): dispara `runPluggyItemIngestion` em background depois
+      // do 201 — nenhum destes precisa fazer nada de verdade aqui, só não lançar.
+      pluggyItemIngestionLeaseRep: {
+        tryAcquire: async () => 1,
+        renew: async () => true,
+        release: async () => true,
+      },
+      syncPluggyPositionInteractor: { execute: async () => ({ data: { synced: false, positionsSynced: 0, loansSynced: 0 } }) },
+      loadPluggyHistoryInteractor: {
+        execute: async () => ({ data: { loaded: false, sourcesScanned: 0, transactionsObserved: 0, sourcesRefused: [] } }),
+      },
     }
     const scope = {
       register: () => {},
       resolve: (key: string) => registrations[key],
     }
-    return { createScope: () => scope } as unknown as AppContainerInstance
+    // Awilix de verdade resolve `.scoped()` direto da raiz sem lançar (a raiz é o escopo mais
+    // externo) — `drainInBackground`/`syncPluggyPositionInBackground`/o disparo de pré-carga usam
+    // exatamente essa chamada (`container.resolve(...)` no callback, nunca um escopo próprio, porque
+    // aquele escopo de requisição já terminou — arquitetura-camadas 2.2.1). O fake precisa do mesmo
+    // comportamento na raiz, não só dentro de `createScope()`.
+    return { createScope: () => scope, resolve: (key: string) => registrations[key] } as unknown as AppContainerInstance
   }
 
   function listen(container: AppContainerInstance) {
@@ -169,7 +188,7 @@ describe('createHttpServer', () => {
       fakeContainer({
         checkCredential: async () => {
           called = true
-          return { data: {} }
+          return { data: { items: [] } }
         },
       }),
     )
@@ -198,14 +217,34 @@ describe('createHttpServer', () => {
     expect(await response.json()).toEqual({ hasCredential: false })
   })
 
-  it('GET /credentials/status com token e credencial completa responde hasCredential:true', async () => {
-    const port = await listen(fakeContainer({ checkCredential: async () => ({ data: {} }) }))
+  it('GET /credentials/status com token e credencial completa responde hasCredential:true com items[]', async () => {
+    const unsupported = { supportedByConnector: false }
+    const items: CredentialStatusItem[] = [
+      {
+        itemId: 'item-1',
+        connectorId: 201,
+        connectorName: 'Banco Exemplo',
+        connectorImageUrl: undefined,
+        connectorPrimaryColor: undefined,
+        connectionStatus: 'CONNECTED',
+        lastUpdatedAt: '2026-09-03T00:00:00.000Z',
+        nextAutoSyncAt: undefined,
+        sources: {
+          accounts: { supportedByConnector: true, enabledForItem: true, isUpdated: true, lastUpdatedAt: '2026-09-03T00:00:00.000Z' },
+          accountTransactions: { supportedByConnector: true, enabledForItem: true, isUpdated: true, lastUpdatedAt: '2026-09-03T00:00:00.000Z' },
+          investments: unsupported,
+          investmentTransactions: unsupported,
+          loans: unsupported,
+        },
+      },
+    ]
+    const port = await listen(fakeContainer({ checkCredential: async () => ({ data: { items } }) }))
 
     const response = await fetch(`http://127.0.0.1:${port}/credentials/status`, {
       headers: { authorization: `Bearer ${validToken}` },
     })
 
     expect(response.status).toBe(200)
-    expect(await response.json()).toEqual({ hasCredential: true })
+    expect(await response.json()).toEqual({ hasCredential: true, items })
   })
 })

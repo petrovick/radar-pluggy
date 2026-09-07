@@ -88,4 +88,77 @@ describe('PluggyHistoryCoverageRep', () => {
     expect(found?.getObservedTransactionCount()).toBe(0)
     expect(found?.getOldestObservedTransactionAt()).toBeUndefined()
   })
+
+  it('uma segunda varredura com source_updated_at mais novo substitui a anterior normalmente', async () => {
+    const itemId = randomUUID()
+    const referenceId = randomUUID()
+    itemIdsToCleanup.push(itemId)
+
+    await repository.save({
+      itemId,
+      referenceType: 'ACCOUNT',
+      referenceId,
+      observedTransactionCount: 1,
+      oldestObservedTransactionAt: new Date('2026-01-01T00:00:00.000Z'),
+      newestObservedTransactionAt: new Date('2026-01-01T00:00:00.000Z'),
+      sourceUpdatedAt: new Date('2026-01-01T00:00:00.000Z'),
+      lastCompletedScanAt: new Date('2026-01-02T00:00:00.000Z'),
+    })
+
+    await repository.save({
+      itemId,
+      referenceType: 'ACCOUNT',
+      referenceId,
+      observedTransactionCount: 3,
+      oldestObservedTransactionAt: new Date('2026-01-01T00:00:00.000Z'),
+      newestObservedTransactionAt: new Date('2026-02-01T00:00:00.000Z'),
+      sourceUpdatedAt: new Date('2026-02-01T00:00:00.000Z'),
+      lastCompletedScanAt: new Date('2026-02-02T00:00:00.000Z'),
+    })
+
+    const found = await repository.findByReference(itemId, 'ACCOUNT', referenceId)
+    expect(found?.getObservedTransactionCount()).toBe(3)
+  })
+
+  it('duas escritas concorrentes: a de source_updated_at mais novo sempre prevalece, independente da ordem de conclusão (D17)', async () => {
+    const itemId = randomUUID()
+    const referenceId = randomUUID()
+    itemIdsToCleanup.push(itemId)
+
+    await repository.save({
+      itemId,
+      referenceType: 'ACCOUNT',
+      referenceId,
+      observedTransactionCount: 0,
+      lastCompletedScanAt: new Date('2026-01-01T00:00:00.000Z'),
+    })
+
+    const older = {
+      itemId,
+      referenceType: 'ACCOUNT' as const,
+      referenceId,
+      observedTransactionCount: 1,
+      oldestObservedTransactionAt: new Date('2026-01-01T00:00:00.000Z'),
+      newestObservedTransactionAt: new Date('2026-01-01T00:00:00.000Z'),
+      sourceUpdatedAt: new Date('2026-03-01T00:00:00.000Z'),
+      // `last_completed_scan_at` de propósito MAIS NOVO que o da escrita "newer" abaixo — prova que
+      // quem decide não é o instante do save, e sim `source_updated_at` (D9.1/D17).
+      lastCompletedScanAt: new Date('2026-06-01T00:00:00.000Z'),
+    }
+    const newer = {
+      itemId,
+      referenceType: 'ACCOUNT' as const,
+      referenceId,
+      observedTransactionCount: 9,
+      oldestObservedTransactionAt: new Date('2026-01-01T00:00:00.000Z'),
+      newestObservedTransactionAt: new Date('2026-05-01T00:00:00.000Z'),
+      sourceUpdatedAt: new Date('2026-05-01T00:00:00.000Z'),
+      lastCompletedScanAt: new Date('2026-05-02T00:00:00.000Z'),
+    }
+
+    await Promise.all([repository.save(older), repository.save(newer)])
+
+    const found = await repository.findByReference(itemId, 'ACCOUNT', referenceId)
+    expect(found?.getObservedTransactionCount()).toBe(9)
+  })
 })

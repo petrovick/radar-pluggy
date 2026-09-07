@@ -1,26 +1,41 @@
 import { ApplicationError } from '../../../shared/application-error.js'
 import { ObservedHistoryScan } from '../../../entities/pluggy-history-coverage.js'
+import { isEligible, isUsable, toVersionAt } from '../../../adapters/gateways/pluggy-source-state.js'
+import type { PluggySource } from '../../../adapters/gateways/pluggy-source-catalog.js'
+import type { PluggyAccountDto } from '../../../adapters/gateways/pluggy-accounts.gateway.js'
+import type { LeaseGuard } from '../../../shared/lease-guard.js'
 import type { AppContainer } from '../../../infra/bootstrap/register.js'
 import type {
   CompletedScan,
-  HistoryProductState,
+  CurrentItemHistoryState,
   HistorySource,
   LoadPluggyHistoryGateway,
   LoadPluggyHistoryInput,
   LoadPluggyHistoryOutput,
 } from './load-pluggy-history.types.js'
 
-// Carga do histórico de caixa e custódia de um item (tasks.md seção 6). Uma dependência só, o gateway
+interface SourceEvaluation {
+  eligible: boolean
+  usable: boolean
+  outdated: boolean
+  versionAt: Date | undefined
+}
+
+interface GroupResult {
+  sourcesScanned: number
+  transactionsObserved: number
+  refused: PluggySource[]
+}
+
+// Carga do histórico de caixa e custódia de um item (tasks.md seção 4). Uma dependência só, o gateway
 // do próprio caso de uso (arquitetura-camadas, regra 2).
 //
-// O que é decisão de negócio e por isso mora aqui:
-// - o portão do item: sem marca d'água nova, nenhuma chamada de transação acontece (D6, fronteira-pluggy 6);
-// - os três estados de produto: sucesso, parcial utilizável, parcial limitado (D8);
-// - elegibilidade por fonte: `updatedAt` do recurso contra a observação anterior, e "sem timestamp
-//   varre inteiro" como fallback seguro;
-// - o que conta como cobertura: só o que uma varredura CONCLUÍDA observou, contagem zero e datas
-//   nulas incluídas (D5) — varredura interrompida não grava conclusão;
-// - a marca d'água avança só depois de todas as fontes elegíveis terminarem.
+// O portão é por FONTE REAL (design.md D4), nunca por item nem por agrupamento de negócio: `CASH`
+// (`ACCOUNTS`/`ACCOUNT_TRANSACTIONS`) e `CUSTODY` (`INVESTMENTS`/`INVESTMENT_TRANSACTIONS`) são só
+// agrupamentos de elegibilidade — cada fonte tem sua própria marca d'água (`PluggySyncProgressRep`,
+// `consumer = HISTORY_LOAD`), sob o gate de elegibilidade por `itemProducts` (D26) e a dependência de
+// D13 (uma fonte de transação só é declarada processada quando ELA e sua fonte de descoberta estão
+// utilizáveis na mesma execução).
 export class LoadPluggyHistoryInteractor {
   private readonly gateway: LoadPluggyHistoryGateway
 
@@ -29,7 +44,7 @@ export class LoadPluggyHistoryInteractor {
   }
 
   async execute(input: LoadPluggyHistoryInput): Promise<LoadPluggyHistoryOutput> {
-    const { itemId } = input
+    const { itemId, leaseGuard } = input
     this.gateway.addContext({
       messageType: 'LOAD_PLUGGY_HISTORY',
       itemId,
@@ -37,6 +52,13 @@ export class LoadPluggyHistoryInteractor {
     })
 
     try {
+      // Revisão do PR #14 (D16): lease já perdido ANTES de qualquer chamada, inclusive antes de
+      // `readCurrentItemState` — que já é, por si só, uma chamada real à Pluggy (`fetchItem`, via
+      // `PluggyItemStateResolver`). Sem isto, uma execução que já perdeu a posse ainda dispararia
+      // essa chamada antes do primeiro ponto de checagem. Lança (propaga ao `catch` abaixo, que já
+      // traduz `ApplicationError` em `{error}`) — mesmo mecanismo do resto do arquivo.
+      this.ensureLeaseHeld(itemId, leaseGuard)
+
       if (input.origin === 'USER') {
         await this.gateway.assertItemAccess(itemId, input.personId)
       }
@@ -49,56 +71,43 @@ export class LoadPluggyHistoryInteractor {
         })
         return { data: emptyResult() }
       }
-      if (item.lastUpdatedAt === undefined) {
-        this.gateway.logError('Item sem lastUpdatedAt não permite decidir o portão')
-        return { error: new ApplicationError('PLUGGY_ITEM_SUCCESS_WITHOUT_LAST_UPDATED_AT', { itemId }) }
-      }
 
-      const itemLastUpdatedAt = new Date(item.lastUpdatedAt)
-      const watermark = await this.gateway.readLastSyncedHistoryWatermark(itemId)
-      const firstLoad = watermark === undefined
+      const cash = await this.processGroup(
+        itemId,
+        item,
+        'ACCOUNTS',
+        'ACCOUNT_TRANSACTIONS',
+        {
+          discover: () => this.gateway.readCashSources(itemId, leaseGuard),
+          // Commit atômico (revisão do review externo ao PR #14/D21): upsert de cada conta + payload
+          // bruto, reconciliação e avanço da marca d'água, todos protegidos pela mesma versão — nunca
+          // separados, para uma execução velha nunca sobrescrever nem regredir a fotografia de contas.
+          commitDiscovery: (sources, versionAt) => this.gateway.commitAccountsDiscovery(itemId, toDiscoveredAccounts(sources), versionAt),
+        },
+        leaseGuard,
+      )
+      const custody = await this.processGroup(
+        itemId,
+        item,
+        'INVESTMENTS',
+        'INVESTMENT_TRANSACTIONS',
+        {
+          discover: () => this.gateway.readCustodySources(itemId, leaseGuard),
+          // Reconciliação de `radar_pluggy_positions` pertence só a `SyncPluggyPositionImpl` (que lê
+          // `INVESTMENTS` sob o consumidor `POSITION_SYNC`) — a descoberta aqui é só instrumental,
+          // para achar quais investimentos escanear em busca de transações de custódia (D4). Sem
+          // fotografia própria pra reconciliar aqui, o avanço simples (`advanceSyncProgress`) já
+          // basta — nada de destrutivo depende dele.
+        },
+        leaseGuard,
+      )
 
-      if (!firstLoad && itemLastUpdatedAt.getTime() <= watermark.getTime()) {
-        this.gateway.logInfo('Portão de marca d’água fechado, nenhuma chamada de transação')
-        return { data: emptyResult() }
-      }
-
-      const refused: string[] = []
-      const sources: HistorySource[] = []
-
-      // Caixa e custódia são recusados de forma independente: produto limitado por rate limit não
-      // pode ser lido como "fonte vazia", e limitar um não impede o outro (D8).
-      if (this.productUsable(item.cashProduct, 'caixa', refused)) {
-        sources.push(...(await this.gateway.readCashSources(itemId)))
-      }
-      if (this.productUsable(item.custodyProduct, 'custódia', refused)) {
-        sources.push(...(await this.gateway.readCustodySources(itemId)))
-      }
-
-      let sourcesScanned = 0
-      let transactionsObserved = 0
-
-      for (const source of sources) {
-        const observation = await this.gateway.readSourceObservation(itemId, source)
-
-        if (!firstLoad && !this.sourceChanged(source, observation.sourceUpdatedAt)) {
-          continue
-        }
-
-        const scan = await this.scanUntilTheEnd(itemId, source)
-        await this.gateway.saveCompletedScan(itemId, scan)
-
-        sourcesScanned++
-        transactionsObserved += scan.observedCount
-      }
-
-      // Só aqui, e só se nenhuma fonte elegível falhou (falha sai pelo catch, sem avançar nada).
-      await this.gateway.advanceHistoryWatermark(itemId, itemLastUpdatedAt)
+      const sourcesScanned = cash.sourcesScanned + custody.sourcesScanned
+      const transactionsObserved = cash.transactionsObserved + custody.transactionsObserved
+      const refused = [...cash.refused, ...custody.refused]
 
       this.gateway.logInfo('Carga de histórico concluída', { sourcesScanned, transactionsObserved })
-      return {
-        data: { loaded: true, sourcesScanned, transactionsObserved, sourcesRefused: refused },
-      }
+      return { data: { loaded: true, sourcesScanned, transactionsObserved, sourcesRefused: refused } }
     } catch (err) {
       this.gateway.logError('Erro inesperado na carga de histórico', { err })
       if (err instanceof ApplicationError) {
@@ -108,13 +117,100 @@ export class LoadPluggyHistoryInteractor {
     }
   }
 
+  // Avalia se `source` está habilitada (D26), utilizável nesta execução (D6) e com marca d'água
+  // desatualizada (D4) — nessa ordem: elegibilidade por `itemProducts` sempre primeiro.
+  private async evaluateSource(itemId: string, item: CurrentItemHistoryState, source: PluggySource): Promise<SourceEvaluation> {
+    if (!isEligible(item.itemProducts, source)) {
+      return { eligible: false, usable: false, outdated: false, versionAt: undefined }
+    }
+    if (!isUsable(item, source)) {
+      return { eligible: true, usable: false, outdated: false, versionAt: undefined }
+    }
+
+    const versionAt = toVersionAt(item, source, itemId)
+    const watermark = await this.gateway.readSyncProgress(itemId, source)
+    const outdated = versionAt !== undefined && (watermark === undefined || versionAt.getTime() > watermark.getTime())
+
+    return { eligible: true, usable: true, outdated, versionAt }
+  }
+
+  // Um agrupamento (`CASH`/`CUSTODY`) é: descobre a fonte-base (contas/investimentos), reconcilia sua
+  // fotografia quando ela mesma está desatualizada, e escaneia a fonte de transação correspondente —
+  // só quando ELA e a fonte-base estão utilizáveis na mesma execução (D13). A descoberta só acontece
+  // uma vez, reaproveitada pelos dois lados.
+  private async processGroup(
+    itemId: string,
+    item: CurrentItemHistoryState,
+    discoverySource: PluggySource,
+    transactionSource: PluggySource,
+    hooks: {
+      discover: () => Promise<HistorySource[]>
+      // Commit atômico (upsert + reconciliação + avanço de versão, juntos) — quando ausente
+      // (custódia), a fonte de descoberta não tem fotografia própria a upsertar/reconciliar, e o
+      // avanço simples basta. Recebe os `HistorySource[]` inteiros (não só os ids): quem sabe extrair
+      // os dados de conta de dentro deles é o wrapper específico de CASH, não este método genérico.
+      commitDiscovery?: (sources: HistorySource[], versionAt: Date) => Promise<boolean>
+    },
+    leaseGuard: LeaseGuard | undefined,
+  ): Promise<GroupResult> {
+    const discovery = await this.evaluateSource(itemId, item, discoverySource)
+    const transactionRaw = await this.evaluateSource(itemId, item, transactionSource)
+    // D13: a fonte de transação só é tratada como pronta para avançar quando a fonte-base também
+    // está utilizável NESTA execução — sem a listagem atual, pode existir um recurso novo não
+    // descoberto. A fonte-base nunca depende da dependente (avança sozinha).
+    const transactionOutdated = transactionRaw.outdated && discovery.usable
+
+    const refused: PluggySource[] = []
+    if (discovery.eligible && !discovery.usable) refused.push(discoverySource)
+    if (transactionRaw.eligible && !transactionRaw.usable) refused.push(transactionSource)
+
+    if (!discovery.outdated && !transactionOutdated) {
+      return { sourcesScanned: 0, transactionsObserved: 0, refused }
+    }
+
+    this.ensureLeaseHeld(itemId, leaseGuard)
+    const sources = await hooks.discover()
+
+    if (discovery.outdated && discovery.versionAt !== undefined) {
+      this.ensureLeaseHeld(itemId, leaseGuard)
+      if (hooks.commitDiscovery) {
+        const committed = await hooks.commitDiscovery(sources, discovery.versionAt)
+        if (!committed) {
+          this.gateway.logInfo('Versão mais nova já aplicada por outra execução, fotografia de contas não regride', {
+            itemId,
+            source: discoverySource,
+          })
+        }
+      } else {
+        await this.gateway.advanceSyncProgress(itemId, discoverySource, discovery.versionAt)
+      }
+    }
+
+    let sourcesScanned = 0
+    let transactionsObserved = 0
+
+    if (transactionOutdated && transactionRaw.versionAt !== undefined) {
+      for (const source of sources) {
+        const scan = await this.scanUntilTheEnd(itemId, source, leaseGuard)
+        await this.gateway.saveCompletedScan(itemId, scan)
+        sourcesScanned++
+        transactionsObserved += scan.observedCount
+      }
+      await this.gateway.advanceSyncProgress(itemId, transactionSource, transactionRaw.versionAt)
+    }
+
+    return { sourcesScanned, transactionsObserved, refused }
+  }
+
   // Varre a fonte inteira acumulando só o que foi observado. A conclusão (`CompletedScan`) existe
   // apenas depois da última página: interrupção no meio lança e nunca chega aqui, então a conclusão
-  // anterior da fonte permanece intacta (D5).
-  private async scanUntilTheEnd(itemId: string, source: HistorySource): Promise<CompletedScan> {
+  // anterior da fonte permanece intacta — perda de lease no meio da varredura também lança (nunca
+  // devolve uma conclusão parcial disfarçada de completa).
+  private async scanUntilTheEnd(itemId: string, source: HistorySource, leaseGuard: LeaseGuard | undefined): Promise<CompletedScan> {
     let scan = ObservedHistoryScan.empty()
 
-    for await (const page of this.gateway.scanSource(itemId, source)) {
+    for await (const page of this.gateway.scanSource(itemId, source, leaseGuard)) {
+      this.ensureLeaseHeld(itemId, leaseGuard)
       scan = scan.observe(page)
     }
 
@@ -128,30 +224,27 @@ export class LoadPluggyHistoryInteractor {
     }
   }
 
-  // Parcial utilizável segue; parcial limitado recusa aquela fonte nomeando o produto, sem derrubar o
-  // item inteiro nem marcar conclusão (D8).
-  private productUsable(product: HistoryProductState, nome: string, refused: string[]): boolean {
-    if (product.limitedByRateLimit) {
-      this.gateway.logWarn('Produto limitado por rate limit, fonte recusada', {
-        produto: nome,
-        warnings: product.warningCodes,
-      })
-      refused.push(nome)
-      return false
+  // Invariante desta rodada: `renew() === false` no lease de ingestão que protege esta execução
+  // (D16) recusa nova página, nova chamada e novo commit destrutivo — nunca aborta trabalho já em
+  // voo, só impede o PRÓXIMO passo. Sem `leaseGuard` (chamador não detém lease), nunca recusa.
+  private ensureLeaseHeld(itemId: string, leaseGuard: LeaseGuard | undefined): void {
+    if (!leaseGuard?.isLost()) {
+      return
     }
-    return true
-  }
-
-  // Sem `updatedAt` do recurso, ou sem observação anterior, varre inteiro — fallback seguro, nunca
-  // "presume que não mudou" (tasks.md 6.2).
-  private sourceChanged(source: HistorySource, sourceUpdatedAt: Date | undefined): boolean {
-    if (source.updatedAt === undefined || sourceUpdatedAt === undefined) {
-      return true
-    }
-    return source.updatedAt.getTime() > sourceUpdatedAt.getTime()
+    this.gateway.logInfo('Lease de ingestão perdido, carga de histórico interrompida antes de novo passo', { itemId })
+    throw new ApplicationError('PLUGGY_ITEM_INGESTION_LEASE_LOST', { itemId })
   }
 }
 
 function emptyResult() {
   return { loaded: false, sourcesScanned: 0, transactionsObserved: 0, sourcesRefused: [] }
+}
+
+// `HistorySource` é união discriminada por `kind` (revisão do review externo ao PR #14): `account`
+// é obrigatório na variante `ACCOUNT`, então o filtro abaixo já garante, pelo próprio tipo, que todo
+// elemento restante tem `.account` presente — sem checagem manual em runtime.
+function toDiscoveredAccounts(sources: HistorySource[]): PluggyAccountDto[] {
+  return sources
+    .filter((source): source is Extract<HistorySource, { kind: 'ACCOUNT' }> => source.kind === 'ACCOUNT')
+    .map((source) => source.account)
 }

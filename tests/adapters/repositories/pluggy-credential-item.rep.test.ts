@@ -70,6 +70,44 @@ describe('PluggyCredentialItemRep', () => {
     expect(await credentialItemRep.findItemIdsByCredentialIds([])).toEqual([])
   })
 
+  it('findActiveItemIdsByCredentialIds exclui item marcado inativo (D29)', async () => {
+    const clientId = randomUUID()
+    const activeItemId = randomUUID()
+    const inactiveItemId = randomUUID()
+    clientIdsToCleanup.push(clientId)
+    itemIdsToCleanup.push(activeItemId, inactiveItemId)
+
+    const credential = await credentialRep.create({ personId: 1, clientId, clientSecret: 'segredo' })
+    await credentialItemRep.linkItem(credential.requireId(), activeItemId)
+    await credentialItemRep.linkItem(credential.requireId(), inactiveItemId)
+    await credentialItemRep.markInactive(inactiveItemId, new Date())
+
+    const activeIds = await credentialItemRep.findActiveItemIdsByCredentialIds([credential.requireId()])
+    expect(activeIds).toEqual([activeItemId])
+
+    // A listagem sem filtro continua vendo os dois — usada por /credentials/status.
+    const allIds = await credentialItemRep.findItemIdsByCredentialIds([credential.requireId()])
+    expect(allIds.sort()).toEqual([activeItemId, inactiveItemId].sort())
+  })
+
+  it('markInactive é condicional: reentrega do evento nunca sobrescreve o instante original', async () => {
+    const clientId = randomUUID()
+    const itemId = randomUUID()
+    clientIdsToCleanup.push(clientId)
+    itemIdsToCleanup.push(itemId)
+
+    const credential = await credentialRep.create({ personId: 1, clientId, clientSecret: 'segredo' })
+    await credentialItemRep.linkItem(credential.requireId(), itemId)
+
+    const first = new Date('2026-08-01T00:00:00.000Z')
+    const later = new Date('2026-08-02T00:00:00.000Z')
+    await credentialItemRep.markInactive(itemId, first)
+    await credentialItemRep.markInactive(itemId, later)
+
+    const row = await credentialItemModel.findOne({ where: { item_id: itemId } })
+    expect(row?.get('inactive_at')).toEqual(first)
+  })
+
   it('itemId duplicado é recusado pela constraint real do banco', async () => {
     const firstClientId = randomUUID()
     const secondClientId = randomUUID()

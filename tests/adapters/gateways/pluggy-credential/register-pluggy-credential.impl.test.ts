@@ -11,6 +11,7 @@ import { definePluggyCredentialModel } from '../../../../src/infra/db/models/plu
 import { definePluggyCredentialItemModel } from '../../../../src/infra/db/models/pluggy-credential-item-model.js'
 import type { AppContainer } from '../../../../src/infra/bootstrap/register.js'
 import type { PluggyConnectorClient } from '../../../../src/adapters/gateways/pluggy-client.gateway.js'
+import { currentCallContext } from '../../../../src/infra/tools/call-context.js'
 
 describe('RegisterPluggyCredentialImpl', () => {
   const sequelize = createDatabaseConnection(testDatabaseConfig())
@@ -21,6 +22,7 @@ describe('RegisterPluggyCredentialImpl', () => {
 
   let freshClientCreated = false
   let fetchItemCalledWithClient: PluggyConnectorClient | undefined
+  let nextFetchItemResult: unknown = {}
 
   const fakeFreshClient = { fake: 'fresh-client' } as unknown as PluggyConnectorClient
 
@@ -45,12 +47,13 @@ describe('RegisterPluggyCredentialImpl', () => {
     pluggyItemsGateway: {
       fetchItem: async (_itemId: string, client: PluggyConnectorClient) => {
         fetchItemCalledWithClient = client
-        return {} as never
+        return nextFetchItemResult
       },
     },
     pluggyWebhookProvisioner: {
       provisionFor: async () => {},
     },
+    pluggyCallRecorder: { record: () => {} },
   } as unknown as AppContainer
 
   const mutable = container as unknown as Record<string, unknown>
@@ -64,6 +67,7 @@ describe('RegisterPluggyCredentialImpl', () => {
   afterEach(async () => {
     freshClientCreated = false
     fetchItemCalledWithClient = undefined
+    nextFetchItemResult = {}
     transactions.clear()
 
     while (itemIds.length > 0) {
@@ -94,6 +98,7 @@ describe('RegisterPluggyCredentialImpl', () => {
       clientId: randomUUID(),
       clientSecret: 'segredo',
       itemId: itemIdOcupado,
+      connector: undefined,
     })
     credentialIds.push(credId)
     itemIds.push(itemIdOcupado)
@@ -111,7 +116,62 @@ describe('RegisterPluggyCredentialImpl', () => {
     })
 
     expect(freshClientCreated).toBe(true)
-    expect(fetchItemCalledWithClient).toBe(fakeFreshClient)
+    // Instrumentado (design.md D3) — Proxy em volta do `freshClient`, nunca a mesma referência, mas
+    // com o mesmo comportamento observável.
+    expect(fetchItemCalledWithClient).toEqual(fakeFreshClient)
+  })
+
+  it('validateItemAccess: devolve o connector lido no mesmo payload que validou o item (D8)', async () => {
+    nextFetchItemResult = {
+      connector: { connectorId: 201, name: 'Banco Exemplo', imageUrl: undefined, primaryColor: undefined, products: ['ACCOUNTS'] },
+    }
+
+    const result = await impl.validateItemAccess({
+      clientId: 'meu-client-id',
+      clientSecret: 'meu-client-secret',
+      itemId: 'meu-item-id',
+    })
+
+    expect(result.connector).toEqual({
+      connectorId: 201,
+      name: 'Banco Exemplo',
+      imageUrl: undefined,
+      primaryColor: undefined,
+      products: ['ACCOUNTS'],
+    })
+  })
+
+  it('validateItemAccess: connector ausente no payload devolve undefined, nunca inventado', async () => {
+    nextFetchItemResult = {}
+
+    const result = await impl.validateItemAccess({
+      clientId: 'meu-client-id',
+      clientSecret: 'meu-client-secret',
+      itemId: 'meu-item-id',
+    })
+
+    expect(result.connector).toBeUndefined()
+  })
+
+  it('saveCredentialWithItemLink: persiste a identidade do connector recebida junto do vínculo', async () => {
+    const clientId = randomUUID()
+    const itemId = randomUUID()
+
+    const credentialId = await impl.saveCredentialWithItemLink({
+      personId: 1,
+      clientId,
+      clientSecret: 'segredo',
+      itemId,
+      connector: { connectorId: 201, name: 'Banco Exemplo', imageUrl: undefined, primaryColor: '000000', products: ['ACCOUNTS', 'LOANS'] },
+    })
+    credentialIds.push(credentialId)
+    itemIds.push(itemId)
+
+    const link = await credentialItemModel.findOne({ where: { item_id: itemId } })
+    expect(link?.get().connector_id).toBe(201)
+    expect(link?.get().connector_name).toBe('Banco Exemplo')
+    expect(link?.get().connector_primary_color).toBe('000000')
+    expect(link?.get().connector_products).toEqual(['ACCOUNTS', 'LOANS'])
   })
 
   it('saveCredentialWithItemLink: persiste credencial cifrada e vínculo na mesma transação', async () => {
@@ -123,6 +183,7 @@ describe('RegisterPluggyCredentialImpl', () => {
       clientId,
       clientSecret: 'segredo-em-claro',
       itemId,
+      connector: undefined,
     })
     credentialIds.push(credentialId)
     itemIds.push(itemId)
@@ -144,6 +205,7 @@ describe('RegisterPluggyCredentialImpl', () => {
       clientId: randomUUID(),
       clientSecret: 'segredo',
       itemId: itemDisputado,
+      connector: undefined,
     })
     credentialIds.push(primeira)
     itemIds.push(itemDisputado)
@@ -155,6 +217,7 @@ describe('RegisterPluggyCredentialImpl', () => {
       clientId: segundoClientId,
       clientSecret: 'segredo',
       itemId: itemDisputado,
+      connector: undefined,
     })
 
     await expect(segundaTentativa).rejects.toThrow()
@@ -178,5 +241,38 @@ describe('RegisterPluggyCredentialImpl', () => {
     await implComProvisioner.provisionWebhook(42)
 
     expect(provisionCalls).toEqual([42])
+  })
+
+  it('validateItemAccess roda sob trigger=CREDENTIAL_REGISTRATION_VALIDATION (tasks.md 8.8)', async () => {
+    let triggerSeen: string | undefined
+    const implComContexto = new RegisterPluggyCredentialImpl({
+      ...container,
+      pluggyItemsGateway: {
+        fetchItem: async () => {
+          triggerSeen = currentCallContext()?.trigger
+          return {}
+        },
+      },
+    } as unknown as AppContainer)
+
+    await implComContexto.validateItemAccess({ clientId: 'x', clientSecret: 'y', itemId: 'item-1' })
+
+    expect(triggerSeen).toBe('CREDENTIAL_REGISTRATION_VALIDATION')
+  })
+
+  it('provisionWebhook roda sob trigger=CREDENTIAL_REGISTRATION_PROVISIONING (tasks.md 8.8)', async () => {
+    let triggerSeen: string | undefined
+    const implComContexto = new RegisterPluggyCredentialImpl({
+      ...container,
+      pluggyWebhookProvisioner: {
+        provisionFor: async () => {
+          triggerSeen = currentCallContext()?.trigger
+        },
+      },
+    } as unknown as AppContainer)
+
+    await implComContexto.provisionWebhook(42)
+
+    expect(triggerSeen).toBe('CREDENTIAL_REGISTRATION_PROVISIONING')
   })
 })

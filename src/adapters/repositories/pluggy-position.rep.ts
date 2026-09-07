@@ -1,5 +1,5 @@
 import { Decimal } from 'decimal.js'
-import type { Model, ModelStatic } from 'sequelize'
+import { Op, type Model, type ModelStatic } from 'sequelize'
 import { PluggyPosition, type PluggyPositionMetadata } from '../../entities/pluggy-position.js'
 import type { AppContainer, GetTransaction } from '../../infra/bootstrap/register.js'
 import { DB_NAMES } from '../../infra/db/models.js'
@@ -113,6 +113,19 @@ export class PluggyPositionRep {
 
     await row.update(toRow(draft, now), transaction ? { transaction } : {})
     return draft
+  }
+
+  // Reconciliação de fotografia atual (design.md D21): todo investimento local daquele Item cujo
+  // `investmentId` não veio na leitura autoritativa atual deixa de pertencer à fotografia. Chamado
+  // só quando `INVESTMENTS` é `isUsable` nesta execução. Snapshot/raw nunca são tocados aqui — são
+  // histórico append-only por natureza.
+  async reconcile(itemId: string, presentInvestmentIds: string[]): Promise<number> {
+    const transaction = this.getTransaction(DB_NAMES.MAIN)
+    const where: Record<string, unknown> = { item_id: itemId }
+    if (presentInvestmentIds.length > 0) {
+      where.investment_id = { [Op.notIn]: presentInvestmentIds }
+    }
+    return this.model.destroy({ where, ...(transaction ? { transaction } : {}) })
   }
 
   async findByItemIds(itemIds: string[]): Promise<PluggyPosition[]> {

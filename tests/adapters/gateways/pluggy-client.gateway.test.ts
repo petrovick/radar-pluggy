@@ -1,13 +1,17 @@
 import { Console } from 'node:console'
 import { PassThrough } from 'node:stream'
-import { describe, expect, it } from 'vitest'
+import { PluggyClient } from 'pluggy-sdk'
+import { describe, expect, it, vi } from 'vitest'
 import {
   PluggyClientGateway,
   PluggyConnectorClient,
   installSdkConsoleFilter,
   shouldSuppressSdkLog,
   pluggySdkError,
+  classifyPluggyCallFailure,
 } from '../../../src/adapters/gateways/pluggy-client.gateway.js'
+import type { PluggyCallRecorder, PluggyCallEvent } from '../../../src/adapters/gateways/pluggy-call-recorder.js'
+import { runWithCallContext } from '../../../src/infra/tools/call-context.js'
 
 describe('PluggyClientGateway', () => {
   it('clientFor: reaproveita a mesma instância de cliente para o mesmo clientId', () => {
@@ -86,5 +90,101 @@ describe('PluggyClientGateway', () => {
 
     expect(appErr.errorType).toBe('PLUGGY_TIMEOUT')
     expect(appErr.details).toEqual({ itemId: 'item-1' })
+  })
+
+  it('classifyPluggyCallFailure: 4xx é CLIENT_ERROR, 5xx é UPSTREAM_ERROR, timeout é TIMEOUT', () => {
+    const timeoutErr = new Error('t')
+    timeoutErr.name = 'TimeoutError'
+    expect(classifyPluggyCallFailure(timeoutErr).failureKind).toBe('TIMEOUT')
+
+    const clientErr = { response: { statusCode: 404 } }
+    expect(classifyPluggyCallFailure(clientErr)).toMatchObject({ failureKind: 'CLIENT_ERROR', httpStatus: 404 })
+
+    const upstreamErr = { response: { statusCode: 500 } }
+    expect(classifyPluggyCallFailure(upstreamErr)).toMatchObject({ failureKind: 'UPSTREAM_ERROR', httpStatus: 500 })
+
+    const bodyOnlyErr = { code: 502, message: 'bad gateway' }
+    expect(classifyPluggyCallFailure(bodyOnlyErr)).toMatchObject({ failureKind: 'UPSTREAM_ERROR', errorCode: '502' })
+
+    const networkErr = new Error('ECONNREFUSED')
+    expect(classifyPluggyCallFailure(networkErr).failureKind).toBe('UNAVAILABLE')
+  })
+})
+
+// design.md D1: autenticação observada no ponto real onde acontece, nunca simulada a partir de
+// outra chamada. `getApiKey` é `protected` no SDK — o override é testado chamando-o diretamente via
+// cast, mesma técnica que o próprio SDK usa internamente (`this.getApiKey()`).
+describe('PluggyConnectorClient.getApiKey (D1)', () => {
+  function asGetApiKey(client: PluggyConnectorClient): () => Promise<string> {
+    return (client as unknown as { getApiKey(): Promise<string> }).getApiKey.bind(client)
+  }
+
+  // `getApiKey`/`isJwtExpired` são `protected` no SDK — o cast expõe só a assinatura pública que o
+  // teste precisa espiar, sem recorrer a `never` (que apagaria os métodos do mock).
+  const superProto = PluggyClient.prototype as unknown as {
+    getApiKey(): Promise<string>
+    isJwtExpired(token: string): boolean
+  }
+
+  function fakeRecorder(): { recorder: PluggyCallRecorder; events: PluggyCallEvent[] } {
+    const events: PluggyCallEvent[] = []
+    return { recorder: { record: (event: PluggyCallEvent) => events.push(event) } as unknown as PluggyCallRecorder, events }
+  }
+
+  it('client novo (sem token em cache) gera um registro de AUTH correspondente à autenticação real', async () => {
+    const client = new PluggyConnectorClient({ clientId: 'c1', clientSecret: 's1' })
+    const { recorder, events } = fakeRecorder()
+    client.setCallRecorder(recorder)
+
+    const spy = vi.spyOn(superProto, 'getApiKey').mockResolvedValue('token-abc')
+
+    const key = await runWithCallContext({ trigger: 'WEBHOOK', requestCorrelationId: 'corr-1' }, () =>
+      asGetApiKey(client)(),
+    )
+
+    expect(key).toBe('token-abc')
+    expect(events).toHaveLength(1)
+    expect(events[0]).toMatchObject({ operation: 'AUTH', callScope: 'AUTH', outcome: 'SUCCEEDED', trigger: 'WEBHOOK', requestCorrelationId: 'corr-1' })
+
+    spy.mockRestore()
+  })
+
+  it('client com token em cache ainda válido não gera nenhum registro de AUTH', async () => {
+    const client = new PluggyConnectorClient({ clientId: 'c1', clientSecret: 's1' })
+    const { recorder, events } = fakeRecorder()
+    client.setCallRecorder(recorder)
+    ;(client as unknown as { apiKey: string }).apiKey = 'cached-token'
+    const isJwtExpiredSpy = vi.spyOn(superProto, 'isJwtExpired').mockReturnValue(false)
+
+    const key = await asGetApiKey(client)()
+
+    expect(key).toBe('cached-token')
+    expect(events).toEqual([])
+
+    isJwtExpiredSpy.mockRestore()
+  })
+
+  it('falha real de autenticação gera registro FAILED com failureKind, e relança o erro original', async () => {
+    const client = new PluggyConnectorClient({ clientId: 'c1', clientSecret: 's1' })
+    const { recorder, events } = fakeRecorder()
+    client.setCallRecorder(recorder)
+
+    const authError = { response: { statusCode: 401 } }
+    const spy = vi.spyOn(superProto, 'getApiKey').mockRejectedValue(authError)
+
+    await expect(asGetApiKey(client)()).rejects.toBe(authError)
+    expect(events).toHaveLength(1)
+    expect(events[0]).toMatchObject({ operation: 'AUTH', outcome: 'FAILED', failureKind: 'CLIENT_ERROR', httpStatus: 401 })
+
+    spy.mockRestore()
+  })
+
+  it('sem PluggyCallRecorder configurado, nunca lança — apenas não registra', async () => {
+    const client = new PluggyConnectorClient({ clientId: 'c1', clientSecret: 's1' })
+    const spy = vi.spyOn(superProto, 'getApiKey').mockResolvedValue('token-xyz')
+
+    await expect(asGetApiKey(client)()).resolves.toBe('token-xyz')
+
+    spy.mockRestore()
   })
 })

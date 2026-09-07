@@ -4,6 +4,8 @@ import { ApplicationError } from '../../shared/application-error.js'
 import type { PluggyClientGateway, PluggyConnectorClient } from './pluggy-client.gateway.js'
 import type { PluggyCredentialItemRep } from '../repositories/pluggy-credential-item.rep.js'
 import type { PluggyCredentialRep } from '../repositories/pluggy-credential.rep.js'
+import type { PluggyCallRecorder } from './pluggy-call-recorder.js'
+import { instrumentPluggyClient } from './pluggy-call-instrumentation.js'
 
 // União discriminada em vez de `PluggyCredential | undefined` interno: o "por que faltou" precisa
 // sobreviver até quem chama, e é o compilador que garante que os dois casos foram tratados.
@@ -27,12 +29,15 @@ export class PluggyItemCredentialResolver {
   private readonly pluggyCredentialItemRep: PluggyCredentialItemRep
   private readonly pluggyCredentialRep: PluggyCredentialRep
   private readonly pluggyClientGateway: PluggyClientGateway
+  private readonly pluggyCallRecorder: PluggyCallRecorder
   private readonly resolved = new Map<string, PluggyCredential>()
+  private readonly instrumentedClients = new Map<string, PluggyConnectorClient>()
 
   constructor(params: AppContainer) {
     this.pluggyCredentialItemRep = params.pluggyCredentialItemRep
     this.pluggyCredentialRep = params.pluggyCredentialRep
     this.pluggyClientGateway = params.pluggyClientGateway
+    this.pluggyCallRecorder = params.pluggyCallRecorder
   }
 
   // Variante que não lança, para quem precisa recusar sem contar ao chamador *por que* recusou — o
@@ -80,8 +85,22 @@ export class PluggyItemCredentialResolver {
 
   // Cliente do SDK já autenticável para aquele item. Não devolve api key: quem autentica é o SDK, por
   // dentro, e nenhuma assinatura nossa carrega segredo (padroes-de-engenharia, 3b).
+  //
+  // Instrumentado (design.md D3/D22): toda chamada feita por este cliente gera linha em
+  // `radar_pluggy_calls` com `item_id` preenchido e `connector_id` quando já conhecido. Cacheado por
+  // itemId, não só por clientId — o Proxy de instrumentação embrulha o client cacheado do gateway
+  // (compartilhado entre itens da mesma credencial), mas o `item_id` gravado é por item.
   async clientFor(itemId: string): Promise<PluggyConnectorClient> {
+    const cached = this.instrumentedClients.get(itemId)
+    if (cached) {
+      return cached
+    }
+
     const credential = await this.credentialFor(itemId)
-    return this.pluggyClientGateway.clientFor(credential.getClientId(), credential.getClientSecret())
+    const client = this.pluggyClientGateway.clientFor(credential.getClientId(), credential.getClientSecret())
+    const connectorId = (await this.pluggyCredentialItemRep.findByItemId(itemId))?.connectorId
+    const instrumented = instrumentPluggyClient(client, { itemId, connectorId }, this.pluggyCallRecorder)
+    this.instrumentedClients.set(itemId, instrumented)
+    return instrumented
   }
 }

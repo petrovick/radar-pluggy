@@ -26,6 +26,8 @@ export class PluggyPersonItemResolver {
     }
 
     const credentialIds = credentials.map((credential) => credential.requireId())
-    return this.pluggyCredentialItemRep.findItemIdsByCredentialIds(credentialIds)
+    // Item inativo (`item/deleted`, design.md D29) nunca contribui fotografia corrente — mesmo ajuste
+    // corrige `GET /portfolio` e `GET /accounts` num só ponto.
+    return this.pluggyCredentialItemRep.findActiveItemIdsByCredentialIds(credentialIds)
   }
 }

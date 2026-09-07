@@ -11,7 +11,7 @@ function buildGateway(overrides: Partial<RegisterPluggyCredentialGateway> = {}):
     logWarn: () => {},
     logError: () => {},
     checkItemAvailable: vi.fn().mockResolvedValue(undefined),
-    validateItemAccess: vi.fn().mockResolvedValue(undefined),
+    validateItemAccess: vi.fn().mockResolvedValue({ connector: undefined }),
     saveCredentialWithItemLink: vi.fn().mockResolvedValue(7),
     provisionWebhook: vi.fn().mockResolvedValue(undefined),
     ...overrides,
@@ -46,10 +46,22 @@ describe('RegisterPluggyCredentialInteractor', () => {
       clientId: 'client-1',
       clientSecret: 'segredo',
       itemId: 'item-1',
+      connector: undefined,
     })
     expect(gateway.provisionWebhook).toHaveBeenCalledWith(7)
     expect(error).toBeUndefined()
     expect(data).toEqual({ credentialId: 7 })
+  })
+
+  it('propaga o connector lido em validateItemAccess para saveCredentialWithItemLink (D8)', async () => {
+    const connector = { connectorId: 201, name: 'Banco Exemplo', imageUrl: undefined, primaryColor: undefined, products: ['ACCOUNTS'] }
+    const gateway = buildGateway({ validateItemAccess: vi.fn().mockResolvedValue({ connector }) })
+
+    await buildInteractor(gateway).execute({ personId: 1, clientId: 'client-1', clientSecret: 'segredo', itemId: 'item-1' })
+
+    expect(gateway.saveCredentialWithItemLink).toHaveBeenCalledWith(
+      expect.objectContaining({ connector }),
+    )
   })
 
   it('recusa nomeando o campo quando itemId está vazio, sem chamar validações nem persistência', async () => {

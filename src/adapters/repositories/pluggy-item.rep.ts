@@ -1,4 +1,4 @@
-import type { Model, ModelStatic } from 'sequelize'
+import { Op, type Model, type ModelStatic } from 'sequelize'
 import { PluggyItem } from '../../entities/pluggy-item.js'
 import type { AppContainer, GetTransaction } from '../../infra/bootstrap/register.js'
 import { DB_NAMES } from '../../infra/db/models.js'
@@ -23,10 +23,11 @@ export class PluggyItemRep {
 
   // Unicidade de item_id garantida por findOrCreate sobre a constraint real do banco — nunca
   // "buscar, e se não achar, criar" em dois passos (modelagem-de-dados, idempotência de escrita).
-  // Quando a linha já existe, `findOrCreate` a devolve intocada (não escreve `defaults` de novo) —
-  // a atualização de status/watermark acontece à parte, contra o estado REAL persistido, nunca
-  // contra o rascunho recém-validado: só assim `advanceWatermark` compara com uma marca d'água
-  // que existe de verdade (achado do engenheiro-pluggy-connector na primeira revisão).
+  //
+  // Escrita condicional no banco, nunca "ler, decidir em memória, escrever" (design.md D17): quando a
+  // linha já existe, o `UPDATE` só é aplicado sob `last_updated_at IS NULL OR last_updated_at < :novo`
+  // — uma execução mais antiga nunca sobrescreve uma mais nova, mesmo que a mais antiga termine (e
+  // portanto tente gravar) depois. Zero linhas afetadas é no-op esperado, nunca erro.
   async save(input: SavePluggyItemInput): Promise<PluggyItem> {
     const draft = PluggyItem.create({
       itemId: input.itemId,
@@ -40,8 +41,9 @@ export class PluggyItemRep {
 
     const now = new Date()
     const transaction = this.getTransaction(DB_NAMES.MAIN)
+    const options = transaction ? { transaction } : {}
 
-    const [row, created] = await this.model.findOrCreate({
+    const [, created] = await this.model.findOrCreate({
       where: { item_id: draft.getItemId() },
       defaults: {
         item_id: draft.getItemId(),
@@ -52,30 +54,30 @@ export class PluggyItemRep {
         created_at: now,
         updated_at: now,
       } as PluggyItemRow,
-      ...(transaction ? { transaction } : {}),
+      ...options,
     })
 
     if (created) {
       return draft
     }
 
-    const persisted = toEntity(row.get())
-    persisted.updateStatus(draft.getStatus(), draft.getExecutionStatus())
-    if (input.lastUpdatedAt !== undefined) {
-      persisted.advanceWatermark(input.lastUpdatedAt)
-    }
+    const versionGuard =
+      input.lastUpdatedAt !== undefined
+        ? { [Op.or]: [{ last_updated_at: { [Op.is]: null } }, { last_updated_at: { [Op.lt]: input.lastUpdatedAt } }] }
+        : {}
 
-    await row.update(
+    await this.model.update(
       {
-        status: persisted.getStatus(),
-        execution_status: persisted.getExecutionStatus() ?? null,
-        last_updated_at: persisted.getLastUpdatedAt() ?? null,
+        status: draft.getStatus(),
+        execution_status: draft.getExecutionStatus() ?? null,
+        ...(input.lastUpdatedAt !== undefined ? { last_updated_at: input.lastUpdatedAt } : {}),
         updated_at: now,
-      },
-      transaction ? { transaction } : {},
+      } as Partial<PluggyItemRow>,
+      { where: { item_id: draft.getItemId(), ...versionGuard }, ...options },
     )
 
-    return persisted
+    const persisted = await this.model.findOne({ where: { item_id: draft.getItemId() }, ...options })
+    return persisted ? toEntity(persisted.get()) : draft
   }
 
   async findByItemId(itemId: string): Promise<PluggyItem | undefined> {

@@ -2,6 +2,23 @@ import { ApplicationError } from '../shared/application-error.js'
 
 const ALLOWED_CREATE_FIELDS = new Set(['eventId', 'itemId', 'event'])
 
+// Categoria de tratamento (design.md D28) — a inscrição já pede `event: 'all'`, então a Pluggy manda
+// todo tipo de evento; cada um vira exatamente uma destas quatro categorias, nunca "reconhecido e
+// ignorado" por padrão silencioso.
+export const WEBHOOK_EVENT_CATEGORIES = ['FULL_INGESTION', 'OBSERVATION_REFRESH', 'TERMINAL', 'IGNORED'] as const
+export type WebhookEventCategory = (typeof WEBHOOK_EVENT_CATEGORIES)[number]
+
+const FULL_INGESTION_EVENTS = new Set(['item/created', 'item/updated'])
+// `item/waiting_user_action` (D28) é distinto de `item/waiting_user_input` — os dois só atualizam o
+// estado observado, nunca disparam ingestão.
+const OBSERVATION_REFRESH_EVENTS = new Set([
+  'item/error',
+  'item/waiting_user_input',
+  'item/waiting_user_action',
+  'item/login_succeeded',
+])
+const TERMINAL_EVENTS = new Set(['item/deleted'])
+
 // Estados possíveis de um evento na inbox (design.md D7). `SUCCEEDED` é terminal; `PENDING` e
 // `PROCESSING` são de trabalho. Não existe `FAILED` terminal de propósito: falha devolve o evento a
 // `PENDING`, porque o que perde trabalho de vez é declarar fracasso, não tentar de novo depois.
@@ -60,10 +77,31 @@ export class PluggyWebhookEvent {
     )
   }
 
-  // `item/created` e `item/updated` são os que disparam carga (design.md D7). Qualquer outro evento é
-  // reconhecido e concluído sem trabalho — não é erro, é evento que não nos diz respeito.
-  isApplicable(): boolean {
-    return this.event === 'item/created' || this.event === 'item/updated'
+  // Quatro categorias fechadas (design.md D28): `FULL_INGESTION` adquire lease e roda Position+
+  // History; `OBSERVATION_REFRESH` só releem o estado observado (sem lease, sem sincronizar);
+  // `TERMINAL` (`item/deleted`) marca o vínculo inativo sem tentar reler — o recurso já não existe
+  // na Pluggy; `IGNORED` é decisão deliberada e documentada (`connector/status_updated` e demais),
+  // nunca "esquecido".
+  categorize(): WebhookEventCategory {
+    if (FULL_INGESTION_EVENTS.has(this.event)) {
+      return 'FULL_INGESTION'
+    }
+    if (OBSERVATION_REFRESH_EVENTS.has(this.event)) {
+      return 'OBSERVATION_REFRESH'
+    }
+    if (TERMINAL_EVENTS.has(this.event)) {
+      return 'TERMINAL'
+    }
+    return 'IGNORED'
+  }
+
+  // Revisão do PR #14: um `item/updated`/`item/error` atrasado que só chega DEPOIS que o vínculo já
+  // foi marcado inativo (por um `item/deleted` já processado) nunca reativa o Item — `item/deleted`
+  // é terminal (D28), nada que chega depois dele muda esse fato. Só se aplica a `FULL_INGESTION`/
+  // `OBSERVATION_REFRESH`: `TERMINAL` e `IGNORED` não reabrem trabalho no Item de qualquer forma.
+  isMootGivenItemInactive(inactiveAt: Date | undefined): boolean {
+    const category = this.categorize()
+    return (category === 'FULL_INGESTION' || category === 'OBSERVATION_REFRESH') && inactiveAt !== undefined
   }
 
   requireId(): number {

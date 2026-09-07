@@ -2,7 +2,6 @@ import type { AppContainer } from '../../../infra/bootstrap/register.js'
 import { ApplicationError } from '../../../shared/application-error.js'
 import type {
   CurrentItemState,
-  LastSyncedItemState,
   PluggyConsentStatus,
   PluggyInvestmentInput,
   PluggyInvestmentsPage,
@@ -13,16 +12,18 @@ import type {
 } from '../../../interactors/pluggy-position/sync/sync-pluggy-position.types.js'
 import DefaultInteractorGatewayImpl from '../default-gateway.impl.js'
 import { PluggyConsent, mostRecentConsent } from '../../../entities/pluggy-consent.js'
-import type { PluggyItemsGateway } from '../pluggy-items.gateway.js'
 import type { PluggyInvestmentsGateway } from '../pluggy-investments.gateway.js'
 import type { PluggyLoansGateway } from '../pluggy-loans.gateway.js'
 import type { PluggyConsentsGateway } from '../pluggy-consents.gateway.js'
+import type { PluggySource } from '../pluggy-source-catalog.js'
 import type { PluggyItemRep } from '../../repositories/pluggy-item.rep.js'
 import type { PluggyPositionRep } from '../../repositories/pluggy-position.rep.js'
 import type { PluggyPositionSnapshotRep } from '../../repositories/pluggy-position-snapshot.rep.js'
 import type { PluggyLoanRep } from '../../repositories/pluggy-loan.rep.js'
 import type { PluggyLoanSnapshotRep } from '../../repositories/pluggy-loan-snapshot.rep.js'
 import type { PluggyConsentRep } from '../../repositories/pluggy-consent.rep.js'
+import type { PluggySyncProgressRep } from '../../repositories/pluggy-sync-progress.rep.js'
+import type { PluggyItemStateResolver } from '../pluggy-item-state.resolver.js'
 import type { PluggyItemCredentialResolver } from '../pluggy-item-credential.resolver.js'
 import type { PluggyItemRawRep } from '../../repositories/pluggy-item-raw.rep.js'
 import type { PluggyConsentRawRep } from '../../repositories/pluggy-consent-raw.rep.js'
@@ -33,16 +34,18 @@ import type { PluggyLoanRawRep } from '../../repositories/pluggy-loan-raw.rep.js
 // `oplab-radar-api`: herda log + ciclo de transação de `DefaultInteractorGatewayImpl` e compõe os
 // colaboradores concretos (gateways de borda da Pluggy, repositórios, interactor de credencial).
 //
-// É aqui, e só aqui, que a atomicidade de D11 existe: `savePositionsWithSnapshots` abre a transação,
-// grava fotografia + snapshot de cada investimento e só então comita. Os repositórios leem a
-// transação vigente do escopo (`getTransaction`), sem recebê-la por parâmetro — não há como um
-// repositório "esquecer" de entrar na transação.
+// É aqui, e só aqui, que a atomicidade de D11 existe: `commitInvestments`/`commitLoans` abrem a
+// transação, tentam avançar a marca d'água condicionalmente à versão, e só gravam fotografia +
+// snapshot de cada item e reconciliam (D21) quando essa tentativa venceu a corrida — e só então
+// comitam (revisão do PR #14: commit de fotografia protegido pela mesma versão do avanço, nunca
+// separado dele). Os repositórios leem a transação vigente do escopo (`getTransaction`), sem
+// recebê-la por parâmetro — não há como um repositório "esquecer" de entrar na transação.
 export default class SyncPluggyPositionImpl
   extends DefaultInteractorGatewayImpl
   implements SyncPluggyPositionGateway
 {
   private readonly pluggyItemCredentialResolver: PluggyItemCredentialResolver
-  private readonly pluggyItemsGateway: PluggyItemsGateway
+  private readonly pluggyItemStateResolver: PluggyItemStateResolver
   private readonly pluggyInvestmentsGateway: PluggyInvestmentsGateway
   private readonly pluggyLoansGateway: PluggyLoansGateway
   private readonly pluggyConsentsGateway: PluggyConsentsGateway
@@ -52,6 +55,7 @@ export default class SyncPluggyPositionImpl
   private readonly pluggyLoanRep: PluggyLoanRep
   private readonly pluggyLoanSnapshotRep: PluggyLoanSnapshotRep
   private readonly pluggyConsentRep: PluggyConsentRep
+  private readonly pluggySyncProgressRep: PluggySyncProgressRep
   private readonly pluggyItemRawRep: PluggyItemRawRep
   private readonly pluggyConsentRawRep: PluggyConsentRawRep
   private readonly pluggyPositionRawRep: PluggyPositionRawRep
@@ -60,7 +64,7 @@ export default class SyncPluggyPositionImpl
   constructor(params: AppContainer) {
     super(params)
     this.pluggyItemCredentialResolver = params.pluggyItemCredentialResolver
-    this.pluggyItemsGateway = params.pluggyItemsGateway
+    this.pluggyItemStateResolver = params.pluggyItemStateResolver
     this.pluggyInvestmentsGateway = params.pluggyInvestmentsGateway
     this.pluggyLoansGateway = params.pluggyLoansGateway
     this.pluggyConsentsGateway = params.pluggyConsentsGateway
@@ -70,6 +74,7 @@ export default class SyncPluggyPositionImpl
     this.pluggyLoanRep = params.pluggyLoanRep
     this.pluggyLoanSnapshotRep = params.pluggyLoanSnapshotRep
     this.pluggyConsentRep = params.pluggyConsentRep
+    this.pluggySyncProgressRep = params.pluggySyncProgressRep
     this.pluggyItemRawRep = params.pluggyItemRawRep
     this.pluggyConsentRawRep = params.pluggyConsentRawRep
     this.pluggyPositionRawRep = params.pluggyPositionRawRep
@@ -77,7 +82,21 @@ export default class SyncPluggyPositionImpl
   }
 
   async readCurrentItemState(itemId: string): Promise<CurrentItemState> {
-    return this.pluggyItemsGateway.fetchItem(itemId, await this.pluggyItemCredentialResolver.clientFor(itemId))
+    const item = await this.pluggyItemStateResolver.read(itemId)
+
+    return {
+      status: item.status,
+      executionStatus: item.executionStatus,
+      lastUpdatedAt: item.lastUpdatedAt,
+      updatedAt: item.updatedAt,
+      itemProducts: item.itemProducts,
+      products: item.products,
+      raw: item.raw,
+    }
+  }
+
+  readSyncProgress(itemId: string, source: PluggySource): Promise<Date | undefined> {
+    return this.pluggySyncProgressRep.read(itemId, 'POSITION_SYNC', source)
   }
 
   // O mais recentemente concedido é o vigente (entities/pluggy-consent.ts) — a Pluggy devolve o
@@ -143,14 +162,25 @@ export default class SyncPluggyPositionImpl
     return this.pluggyInvestmentsGateway.fetchInvestmentsPage(itemId, await this.pluggyItemCredentialResolver.clientFor(itemId), page)
   }
 
-  readLastSyncedItemState(itemId: string): Promise<LastSyncedItemState | undefined> {
-    return this.pluggyItemRep.findByItemId(itemId)
-  }
-
-  async savePositionsWithSnapshots(investments: PluggyInvestmentInput[], syncedAt: Date): Promise<void> {
+  // Commit atômico (revisão do PR #14): dentro de UMA transação, primeiro tenta avançar
+  // `pluggy_sync_progress` condicionalmente à versão — só quando essa tentativa vence a corrida
+  // (`versionAt` estritamente maior que a versão completada) é que a fotografia é tocada: upsert de
+  // cada investimento presente, snapshot histórico (design.md D11), e reconciliação (D21) — todo
+  // registro local cujo `investmentId` não veio nesta leitura deixa de pertencer à fotografia,
+  // inclusive quando `investments` vem vazio (portfólio zerado é estado legítimo). Uma execução
+  // velha cujo `advance` perde a corrida nunca chega a tocar a fotografia (nem upsert nem
+  // reconciliação) — o commit inteiro é um no-op, e a transação é encerrada sem nenhuma escrita
+  // destrutiva. Snapshot/raw nunca são reconciliados.
+  async commitInvestments(itemId: string, investments: PluggyInvestmentInput[], syncedAt: Date, versionAt: Date): Promise<boolean> {
     await this.startProcess()
 
     try {
+      const won = await this.pluggySyncProgressRep.advance(itemId, 'POSITION_SYNC', 'INVESTMENTS', versionAt)
+      if (!won) {
+        await this.terminateProcess()
+        return false
+      }
+
       for (const investment of investments) {
         await this.pluggyPositionRep.save(investment)
         await this.pluggyPositionRawRep.save({
@@ -175,7 +205,10 @@ export default class SyncPluggyPositionImpl
         })
       }
 
+      await this.pluggyPositionRep.reconcile(itemId, investments.map((investment) => investment.investmentId))
+
       await this.terminateProcess()
+      return true
     } catch (err) {
       await this.cancelProcess()
       throw err
@@ -186,14 +219,17 @@ export default class SyncPluggyPositionImpl
     return this.pluggyLoansGateway.fetchLoansPage(itemId, await this.pluggyItemCredentialResolver.clientFor(itemId), page)
   }
 
-  // Mesma forma de `savePositionsWithSnapshots`: transação própria, aberta e comitada aqui — o caso
-  // de uso não sabe que ela existe. Chamada em sequência, depois da de investimentos (não
-  // `Promise.all`): a interactor só chega aqui depois de paginar loans inteiro, então uma página
-  // divergente de empréstimo já recusou antes de qualquer persistência acontecer.
-  async saveLoansWithSnapshots(loans: PluggyLoanInput[], syncedAt: Date): Promise<void> {
+  // Mesma forma de `commitInvestments`, para `LOANS`.
+  async commitLoans(itemId: string, loans: PluggyLoanInput[], syncedAt: Date, versionAt: Date): Promise<boolean> {
     await this.startProcess()
 
     try {
+      const won = await this.pluggySyncProgressRep.advance(itemId, 'POSITION_SYNC', 'LOANS', versionAt)
+      if (!won) {
+        await this.terminateProcess()
+        return false
+      }
+
       for (const loan of loans) {
         await this.pluggyLoanRep.save(loan)
         await this.pluggyLoanRawRep.save({
@@ -215,7 +251,10 @@ export default class SyncPluggyPositionImpl
         })
       }
 
+      await this.pluggyLoanRep.reconcile(itemId, loans.map((loan) => loan.loanId))
+
       await this.terminateProcess()
+      return true
     } catch (err) {
       await this.cancelProcess()
       throw err

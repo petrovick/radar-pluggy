@@ -22,7 +22,7 @@ const server = app.listen(config.port, () => {
   // Recuperação no boot (tasks.md 7.3): evento que já recebeu 2xx mas não terminou de processar
   // — porque o processo caiu no meio — volta a ser processado aqui. Não é cron: roda uma vez, na
   // subida, e o gatilho normal continua sendo a notificação da Pluggy.
-  void drainPluggyWebhookEvents(container)
+  void drainPluggyWebhookEvents(container, 'BOOT_RECOVERY')
     .then((processed) => {
       if (processed > 0) {
         logger.info(`pluggy-connector drenou ${processed} evento(s) pendente(s) no boot`, { count: processed })
