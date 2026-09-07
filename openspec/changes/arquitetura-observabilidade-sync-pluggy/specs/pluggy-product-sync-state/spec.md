@@ -1,9 +1,14 @@
 ## Purpose
 
-Registrar, por item e por produto (`INVESTMENTS`, `LOANS`, `CASH`, `CUSTODY`), até que versão dos
-dados daquele produto específico este serviço já processou com sucesso — para que um produto
-recusado por limite operacional seja retentado assim que ele próprio avançar, sem depender do item
-inteiro mudar de novo e sem um produto saudável esperar por outro que está travado.
+Registrar, por item e por fonte real de dados da Pluggy (`ACCOUNTS`, `ACCOUNT_TRANSACTIONS`,
+`INVESTMENTS`, `INVESTMENT_TRANSACTIONS`, `LOANS` — cada uma com seu próprio `lastUpdatedAt` em
+`Item.statusDetail`), até que versão dos dados daquela fonte específica este serviço já processou
+com sucesso — para que uma fonte recusada por limite operacional seja retentada assim que ela
+própria avançar, sem depender do item inteiro mudar de novo e sem uma fonte saudável esperar por
+outra que está travada. `CASH` (`ACCOUNTS`, `ACCOUNT_TRANSACTIONS`) e `CUSTODY` (`INVESTMENTS`,
+`INVESTMENT_TRANSACTIONS`) são agrupamentos de negócio usados pela carga de histórico para decidir
+elegibilidade — nenhum dos dois tem marca d'água própria, cada um é a união das marcas d'água das
+fontes que o compõem.
 
 ## ADDED Requirements
 

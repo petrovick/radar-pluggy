@@ -20,21 +20,28 @@ de re-tentar só o produto recusado sem depender de o Item inteiro mudar de novo
 
 - Passa a existir um **estado observado** por Item (`radar_pluggy_item_observations`), atualizado em
   todo `fetchItem` válido, independente de a sincronização ter tido sucesso.
-- `GET /credentials/status` deixa de responder só `hasCredential` — passa a devolver, por item
-  vinculado, um `connectionStatus` (`CONNECTING`, `CONNECTED`, `PARTIAL`, `NEEDS_RECONNECT`,
+- `GET /credentials/status` mantém `hasCredential` e passa a devolver, também, por item vinculado,
+  um `connectionStatus` (`CONNECTING`, `CONNECTED`, `PARTIAL`, `NEEDS_RECONNECT`,
   `AWAITING_USER_INPUT`, `STALE`, `UNKNOWN`) mais `lastUpdatedAt`, `nextAutoSyncAt` e a identidade do
-  connector (`connectorId`, `connectorName`, `connectorImageUrl`, `connectorPrimaryColor`).
-  **BREAKING** para quem depende do shape anterior de `PluggyCredentialStatusResponseDto`.
+  connector (`connectorId`, `connectorName`, `connectorImageUrl`, `connectorPrimaryColor`), num novo
+  campo `items[]`. **Aditivo, não breaking**: o `oplab-radar-front` hoje só lê `response.hasCredential`
+  (`pluggy-credentials.api.ts`) e esse campo continua no mesmo lugar, com o mesmo tipo — o backend
+  pode publicar antes do front, sem deploy coordenado. O front passa a consumir `items[]` depois,
+  quando o PR próprio dele for feito.
 - Passa a existir um **histórico append-only de chamadas** à Pluggy (`radar_pluggy_calls`),
   classificado por `call_scope` (`AUTH`, `SNAPSHOT_READ`, `PLATFORM_CONFIG`, `ITEM_SYNC_TRIGGER`,
   `DIRECT_INSTITUTION`, `UNKNOWN`) e por `trigger` de origem, incluindo o evento real de autenticação
   (`POST /auth`), interceptado no ponto exato onde o SDK o dispara — não simulado a partir de outra
   chamada.
 - A marca d'água de sincronização deixa de ser só por Item — passa a existir também por
-  **produto dentro do Item** (`radar_pluggy_product_sync_states`), usada tanto pela sincronização de
-  posição (`INVESTMENTS`, `LOANS`) quanto pela carga de histórico (`CASH`, `CUSTODY`). Um produto
-  recusado por limite operacional é re-tentado assim que o `lastUpdatedAt` daquele produto
-  especificamente avançar — não fica pendurado esperando o Item inteiro mudar.
+  **fonte real dentro do Item** (`radar_pluggy_product_sync_states`): `ACCOUNTS`,
+  `ACCOUNT_TRANSACTIONS`, `INVESTMENTS`, `INVESTMENT_TRANSACTIONS`, `LOANS` — cada uma com o próprio
+  `lastUpdatedAt` que a Pluggy já reporta em `statusDetail`. `INVESTMENTS` e `LOANS` são usadas pela
+  sincronização de posição; `CASH` (`ACCOUNTS` ou `ACCOUNT_TRANSACTIONS`) e `CUSTODY` (`INVESTMENTS`
+  ou `INVESTMENT_TRANSACTIONS`) deixam de ser marca d'água própria e passam a ser só agrupamentos de
+  elegibilidade da carga de histórico. Um produto recusado por limite operacional é re-tentado assim
+  que o `lastUpdatedAt` daquela fonte especificamente avançar — não fica pendurado esperando o Item
+  inteiro mudar, nem esperando uma fonte irmã do mesmo agrupamento de negócio.
 - `radar_pluggy_items` mantém, sem reinterpretação, o significado já fixado: avança se e somente se
   `executionStatus === 'SUCCESS'`. Nunca avança em `PARTIAL_SUCCESS`.
 - A sincronização de posição passa a aceitar `PARTIAL_SUCCESS` e processar `investments`/`loans`
@@ -47,7 +54,12 @@ de re-tentar só o produto recusado sem depender de o Item inteiro mudar de novo
   `MERGING` (ausentes do conjunto validado) e a lista de produtos reconhecida em `statusDetail`
   (faltava `loans`).
 - O `connector` (identidade da instituição) embutido em todo `GET /items/{id}` passa a ser capturado
-  e persistido no vínculo credencial↔item, no momento do cadastro — hoje é lido e descartado.
+  e persistido no vínculo credencial↔item — no cadastro, e também em toda observação subsequente do
+  Item (mesmo ponto que já lê o Item para atualizar o estado observado): sempre que um Item válido
+  trouxer connector, a identidade conhecida do vínculo é atualizada. Isso preenche vínculos legados
+  com `connector_id = null` e reflete futura mudança de metadata na Pluggy — sem chamada extra a
+  `GET /connectors/{id}`, sempre a partir do `connector` já embutido no payload do Item. Hoje é lido e
+  descartado.
 - A carga inicial que já dispara após `POST /credentials` (sem mudar de pipeline) passa a alimentar o
   estado observado e o histórico de chamadas, e a validação de credencial nova
   (pré-persistência) passa a ser registrada no histórico de chamadas com `trigger` próprio.
@@ -59,9 +71,10 @@ de re-tentar só o produto recusado sem depender de o Item inteiro mudar de novo
 ## Capabilities
 
 ### New Capabilities
-- `pluggy-product-sync-state`: marca d'água de sincronização por Item **e por produto**, usada pela
-  sincronização de posição e pela carga de histórico — cada produto avança e é re-tentado de forma
-  independente.
+- `pluggy-product-sync-state`: marca d'água por Item **e por fonte real** (`ACCOUNTS`,
+  `ACCOUNT_TRANSACTIONS`, `INVESTMENTS`, `INVESTMENT_TRANSACTIONS`, `LOANS`), usada pela
+  sincronização de posição e pela carga de histórico — cada fonte avança e é re-tentada de forma
+  independente; `CASH`/`CUSTODY` são só agrupamento de elegibilidade da carga de histórico.
 - `pluggy-connection-observability`: último estado observado da conexão de um Item (status bruto da
   Pluggy, produto a produto, e a tradução para o vocabulário de conexão que o produto consome), capturado
   em toda leitura válida do Item, independente de sincronização ter ocorrido.
@@ -72,14 +85,16 @@ de re-tentar só o produto recusado sem depender de o Item inteiro mudar de novo
 ### Modified Capabilities
 - `pluggy-item`: `status` passa a aceitar o conjunto completo documentado pelo SDK instalado
   (inclui `WAITING_USER_ACTION` e `MERGING`); o registro ganha identidade de connector
-  (`connectorId`, `connectorName`, `connectorImageUrl`, `connectorPrimaryColor`).
+  (`connectorId`, `connectorName`, `connectorImageUrl`, `connectorPrimaryColor`), capturada no
+  cadastro e atualizada em toda observação subsequente do Item.
 - `pluggy-position-sync`: a sincronização passa a poder avançar com `executionStatus` `PARTIAL_SUCCESS`,
-  processando `investments`/`loans` de forma independente por produto; o portão de entrada some do
-  nível de Item para o nível de produto; a recusa de lista vazia com portão aberto só se aplica ao
-  produto que foi de fato tentado.
+  processando `investments`/`loans` de forma independente por fonte (`INVESTMENTS`, `LOANS`); o
+  portão de entrada some do nível de Item para o nível de fonte; a recusa de lista vazia com portão
+  aberto só se aplica à fonte que foi de fato tentada.
 - `pluggy-transaction-history`: o portão de "atualização diária reativa" passa do nível de Item para
-  o nível de produto (`CASH`/`CUSTODY`); "produto limitado não é vazio" passa a se basear em
-  `isUpdated`, não no código do `warning`.
+  o nível de fonte real (`ACCOUNTS`/`ACCOUNT_TRANSACTIONS` para `CASH`,
+  `INVESTMENTS`/`INVESTMENT_TRANSACTIONS` para `CUSTODY`); "produto limitado não é vazio" passa a se
+  basear em `isUpdated`, não no código do `warning`.
 - `pluggy-credentials`: `GET /credentials/status` passa a expor conexão por item vinculado (não só
   um booleano); o cadastro passa a capturar e persistir a identidade do connector do item; a
   validação de credencial nova (antes do vínculo existir) passa a ser registrada no histórico de
@@ -95,12 +110,14 @@ de re-tentar só o produto recusado sem depender de o Item inteiro mudar de novo
   `Impl` (portão por produto), `CheckPluggyCredentialInteractor`/handler (novo shape),
   três migrations novas e uma remoção (`radar_pluggy_history_sync_states` dá lugar a
   `radar_pluggy_product_sync_states`, sem dado real a migrar — tabela vazia em produção/dev hoje).
-- **Contrato HTTP**: `GET /credentials/status` muda de shape (breaking para o consumidor atual).
-  `POST /credentials`, `GET /portfolio`, `GET /accounts` e demais rotas não mudam de contrato.
-- **`oplab-radar-front`**: `pluggy-credentials.api.ts`/`.store.ts` (novo DTO), novo componente/composable
-  de banner de conexão, `PluggyPortfolioView.vue` e `PluggyCardStatementView.vue` (regra de vazio real
-  vs. sincronizando). PR próprio, coordenado por contrato — não faz parte deste change do
-  `radar-pluggy`.
+- **Contrato HTTP**: `GET /credentials/status` ganha o campo `items[]`, aditivo — `hasCredential`
+  mantém shape e posição, o consumidor atual continua funcionando sem alteração. Permite rollout
+  backend-first, sem deploy coordenado obrigatório com o front. `POST /credentials`, `GET /portfolio`,
+  `GET /accounts` e demais rotas não mudam de contrato.
+- **`oplab-radar-front`**: `pluggy-credentials.api.ts`/`.store.ts` (passam a ler `items[]`, além de
+  `hasCredential`), novo componente/composable de banner de conexão, `PluggyPortfolioView.vue` e
+  `PluggyCardStatementView.vue` (regra de vazio real vs. sincronizando). PR próprio, publicado depois
+  do backend — não faz parte deste change do `radar-pluggy`.
 - **Sem novas dependências de infraestrutura**: continua MySQL/Sequelize, sem Redis, sem scheduler,
   sem retry customizado — nenhuma decisão revogada em `ADR-radar-pluggy-open-finance-consumo-sincronizacao.md`
   é reaberta por este change.

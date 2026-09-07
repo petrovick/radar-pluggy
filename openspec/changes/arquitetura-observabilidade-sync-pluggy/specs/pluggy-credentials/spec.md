@@ -1,10 +1,12 @@
 ## ADDED Requirements
 
 ### Requirement: Consulta de status expõe conexão por item, não só existência de credencial
-A consulta de status de credencial de uma pessoa MUST devolver, para cada item vinculado a alguma
-credencial da pessoa, o estado de conexão traduzido daquele item (`pluggy-connection-observability`),
-o instante da última atualização, a próxima atualização automática prevista quando conhecida, e a
-identidade do connector. Uma pessoa sem nenhuma credencial continua recebendo ausência de
+A consulta de status de credencial de uma pessoa MUST continuar devolvendo `hasCredential` no mesmo
+formato de hoje, e passa a devolver também, para cada item vinculado a alguma credencial da pessoa,
+o estado de conexão traduzido daquele item (`pluggy-connection-observability`), o instante da última
+atualização, a próxima atualização automática prevista quando conhecida, e a identidade do connector,
+num novo campo `items[]`. Mudança aditiva: um consumidor que só lê `hasCredential` continua
+funcionando sem alteração. Uma pessoa sem nenhuma credencial continua recebendo ausência de
 credencial, sem lista de itens.
 
 #### Scenario: Pessoa com itens em estados diferentes
@@ -28,10 +30,12 @@ persistido neste serviço.
 - **THEN** um registro correspondente aparece no histórico de chamadas, identificado por esse
   `itemId`
 
-### Requirement: Identidade do connector é capturada no cadastro, não depois
+### Requirement: Identidade do connector é capturada no cadastro
 No momento em que o vínculo entre credencial e item é criado, a identidade do connector do item —
 obtida do mesmo payload que validou a credencial — MUST ser persistida junto do vínculo. Esse
-vínculo nunca fica sem identidade de connector quando o payload da Pluggy a trouxe.
+vínculo nunca fica sem identidade de connector quando o payload da Pluggy a trouxe. Observações
+subsequentes do mesmo item podem atualizar essa identidade novamente — ver `pluggy-item` — sem que
+isso mude o requisito de que o cadastro já a persista de imediato.
 
 #### Scenario: Cadastro persiste a identidade do connector do item
 - **WHEN** um cadastro de credencial cria o vínculo entre credencial e item

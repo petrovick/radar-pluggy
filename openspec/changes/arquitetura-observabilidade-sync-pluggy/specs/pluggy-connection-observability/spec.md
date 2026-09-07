@@ -21,12 +21,19 @@ connector) é atualizado — mesmo quando esse estado não permite iniciar nenhu
 - **THEN** o estado observado permanece o que já estava registrado
 
 ### Requirement: Observação nunca retrocede no tempo
-Uma leitura mais antiga que a última observação já registrada nunca sobrescreve a observação mais
-recente.
+Cada leitura do item carrega um `observationStartedAt`, capturado no instante em que a leitura
+começou — antes de chamar a Pluggy — não no instante em que termina nem no instante em que é salva.
+Uma gravação só substitui a observação já registrada quando o `observationStartedAt` que ela carrega
+for maior ou igual ao `observationStartedAt` já armazenado. `lastUpdatedAt` reportado pela Pluggy
+nunca é usado como token de ordenação: o `status`/`executionStatus` do item pode mudar sem que
+`lastUpdatedAt` avance.
 
 #### Scenario: Leitura atrasada não sobrescreve leitura mais recente
-- **WHEN** duas leituras do mesmo item ocorrem fora de ordem e a mais antiga chega por último
-- **THEN** o estado observado permanece o da leitura mais recente, não o da que chegou por último
+- **WHEN** duas leituras do mesmo item começam em instantes diferentes, a mais antiga demora mais
+  para terminar, e as duas tentam gravar — a mais recente (por `observationStartedAt`) primeiro, a
+  mais antiga depois
+- **THEN** a gravação da leitura mais antiga é recusada por ter `observationStartedAt` menor que o já
+  armazenado, e o estado observado permanece o da leitura mais recente
 
 ### Requirement: Estado bruto da Pluggy é traduzido para um vocabulário fechado de conexão
 O par (`status`, `executionStatus`) do item é traduzido para exatamente um entre: `CONNECTING`,
