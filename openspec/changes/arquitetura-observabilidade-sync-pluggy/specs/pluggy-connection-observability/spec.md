@@ -1,15 +1,20 @@
 ## Purpose
 
-Manter o último estado observado de cada conexão Pluggy (`Item`), atualizado em toda leitura válida
-do item — independente de uma sincronização de posição ou histórico ter ocorrido — e traduzir esse
-estado bruto para o vocabulário de conexão que o produto expõe ao titular.
+Manter o último estado observado de cada conexão Pluggy (`Item`) **já vinculada a uma credencial**,
+atualizado em toda leitura válida desse item — independente de uma sincronização de posição ou
+histórico ter ocorrido — e traduzir esse estado bruto para o vocabulário de conexão que o produto
+expõe ao titular. A leitura de validação de credencial nova, antes de o vínculo existir, fica fora
+desta capability — ela só alimenta o histórico de chamadas (`pluggy-call-history`).
 
 ## ADDED Requirements
 
-### Requirement: Toda leitura válida do item atualiza o estado observado
-Sempre que este serviço lê com sucesso o estado de um item na Pluggy, o estado observado
-(`status`, `executionStatus`, detalhe por produto, `lastUpdatedAt`, `nextAutoSyncAt`, identidade do
-connector) é atualizado — mesmo quando esse estado não permite iniciar nenhuma sincronização.
+### Requirement: Toda leitura válida de um item já vinculado atualiza o estado observado
+Sempre que este serviço lê com sucesso o estado de um item **já vinculado a uma credencial** na
+Pluggy, o estado observado (`status`, `executionStatus`, detalhe por produto, `lastUpdatedAt`,
+`nextAutoSyncAt`, identidade do connector) é atualizado — mesmo quando esse estado não permite
+iniciar nenhuma sincronização. A leitura que valida uma credencial nova, antes de o vínculo
+credencial↔item ser criado, nunca atualiza o estado observado — não existe vínculo ainda para
+associar a observação.
 
 #### Scenario: Item em erro de login ainda assim atualiza a observação
 - **WHEN** o item lido vem com `status` `LOGIN_ERROR`
@@ -20,13 +25,24 @@ connector) é atualizado — mesmo quando esse estado não permite iniciar nenhu
 - **WHEN** a chamada que leria o item falha antes de obter uma resposta válida
 - **THEN** o estado observado permanece o que já estava registrado
 
+#### Scenario: Validação de credencial nova não escreve estado observado
+- **WHEN** a validação de uma credencial nova lê o Item antes de o vínculo entre credencial e item
+  ser criado
+- **THEN** um registro correspondente aparece no histórico de chamadas (`pluggy-call-history`), e
+  nenhuma linha é criada ou atualizada em `radar_pluggy_item_observations` para esse item
+
 ### Requirement: Observação nunca retrocede no tempo
 Cada leitura do item carrega um `observationStartedAt`, capturado no instante em que a leitura
 começou — antes de chamar a Pluggy — não no instante em que termina nem no instante em que é salva.
 Uma gravação só substitui a observação já registrada quando o `observationStartedAt` que ela carrega
-for maior ou igual ao `observationStartedAt` já armazenado. `lastUpdatedAt` reportado pela Pluggy
-nunca é usado como token de ordenação: o `status`/`executionStatus` do item pode mudar sem que
+for estritamente maior que o `observationStartedAt` já armazenado. `lastUpdatedAt` reportado pela
+Pluggy nunca é usado como token de ordenação: o `status`/`executionStatus` do item pode mudar sem que
 `lastUpdatedAt` avance.
+
+`observationStartedAt` tem resolução de milissegundo — duas leituras concorrentes podem capturá-lo
+com o mesmo valor exato. Em caso de empate, a gravação que chega depois nunca substitui a que já está
+registrada (empate não é "maior que"): prevalece a que conseguiu gravar primeiro, não necessariamente
+a que começou a ler primeiro.
 
 #### Scenario: Leitura atrasada não sobrescreve leitura mais recente
 - **WHEN** duas leituras do mesmo item começam em instantes diferentes, a mais antiga demora mais
@@ -34,6 +50,12 @@ nunca é usado como token de ordenação: o `status`/`executionStatus` do item p
   mais antiga depois
 - **THEN** a gravação da leitura mais antiga é recusada por ter `observationStartedAt` menor que o já
   armazenado, e o estado observado permanece o da leitura mais recente
+
+#### Scenario: Duas leituras com o mesmo observationStartedAt não se sobrescrevem indefinidamente
+- **WHEN** duas leituras do mesmo item capturam o mesmo `observationStartedAt` (empate de
+  milissegundo) e ambas tentam gravar
+- **THEN** apenas a gravação que chega primeiro é aplicada; a segunda, com `observationStartedAt`
+  igual ao já armazenado, é recusada
 
 ### Requirement: Estado bruto da Pluggy é traduzido para um vocabulário fechado de conexão
 O par (`status`, `executionStatus`) do item é traduzido para exatamente um entre: `CONNECTING`,

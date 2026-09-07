@@ -19,7 +19,10 @@ de re-tentar só o produto recusado sem depender de o Item inteiro mudar de novo
 ## What Changes
 
 - Passa a existir um **estado observado** por Item (`radar_pluggy_item_observations`), atualizado em
-  todo `fetchItem` válido, independente de a sincronização ter tido sucesso.
+  todo `fetchItem` válido de um Item **já vinculado** a uma credencial, independente de a
+  sincronização ter tido sucesso. A leitura de validação pré-vínculo (`validateItemAccess`, antes de
+  o cadastro persistir) não escreve aqui — só gera registro em `radar_pluggy_calls`; não existe
+  credencial↔item ainda para associar a observação.
 - `GET /credentials/status` mantém `hasCredential` e passa a devolver, também, por item vinculado,
   um `connectionStatus` (`CONNECTING`, `CONNECTED`, `PARTIAL`, `NEEDS_RECONNECT`,
   `AWAITING_USER_INPUT`, `STALE`, `UNKNOWN`) mais `lastUpdatedAt`, `nextAutoSyncAt` e a identidade do
@@ -33,15 +36,19 @@ de re-tentar só o produto recusado sem depender de o Item inteiro mudar de novo
   `DIRECT_INSTITUTION`, `UNKNOWN`) e por `trigger` de origem, incluindo o evento real de autenticação
   (`POST /auth`), interceptado no ponto exato onde o SDK o dispara — não simulado a partir de outra
   chamada.
-- A marca d'água de sincronização deixa de ser só por Item — passa a existir também por
-  **fonte real dentro do Item** (`radar_pluggy_product_sync_states`): `ACCOUNTS`,
-  `ACCOUNT_TRANSACTIONS`, `INVESTMENTS`, `INVESTMENT_TRANSACTIONS`, `LOANS` — cada uma com o próprio
-  `lastUpdatedAt` que a Pluggy já reporta em `statusDetail`. `INVESTMENTS` e `LOANS` são usadas pela
-  sincronização de posição; `CASH` (`ACCOUNTS` ou `ACCOUNT_TRANSACTIONS`) e `CUSTODY` (`INVESTMENTS`
-  ou `INVESTMENT_TRANSACTIONS`) deixam de ser marca d'água própria e passam a ser só agrupamentos de
-  elegibilidade da carga de histórico. Um produto recusado por limite operacional é re-tentado assim
-  que o `lastUpdatedAt` daquela fonte especificamente avançar — não fica pendurado esperando o Item
-  inteiro mudar, nem esperando uma fonte irmã do mesmo agrupamento de negócio.
+- A marca d'água de sincronização deixa de ser só por Item — passa a existir por **consumidor e por
+  fonte real dentro do Item** (`radar_pluggy_sync_progress`): `POSITION_SYNC` acompanha `INVESTMENTS`
+  e `LOANS`; `HISTORY_LOAD` acompanha `ACCOUNTS`, `ACCOUNT_TRANSACTIONS`, `INVESTMENTS` e
+  `INVESTMENT_TRANSACTIONS` — cada fonte com o próprio `lastUpdatedAt` que a Pluggy já reporta em
+  `statusDetail`. `INVESTMENTS` é acompanhada pelos dois consumidores, cada um com sua própria marca
+  d'água — um consumidor processar `INVESTMENTS` nunca avança a marca d'água do outro para a mesma
+  fonte, porque cada um processa algo diferente a partir dela (posição vs. descoberta de
+  investimentos para custódia). `CASH` (`ACCOUNTS` ou `ACCOUNT_TRANSACTIONS`) e `CUSTODY`
+  (`INVESTMENTS` ou `INVESTMENT_TRANSACTIONS`), ambos do consumidor `HISTORY_LOAD`, deixam de ser
+  marca d'água própria e passam a ser só agrupamentos de elegibilidade. Uma fonte recusada por limite
+  operacional é re-tentada assim que o `lastUpdatedAt` daquela fonte especificamente avançar — não
+  fica pendurada esperando o Item inteiro mudar, nem esperando uma fonte irmã do mesmo agrupamento,
+  nem o progresso de outro consumidor.
 - `radar_pluggy_items` mantém, sem reinterpretação, o significado já fixado: avança se e somente se
   `executionStatus === 'SUCCESS'`. Nunca avança em `PARTIAL_SUCCESS`.
 - A sincronização de posição passa a aceitar `PARTIAL_SUCCESS` e processar `investments`/`loans`
@@ -71,10 +78,11 @@ de re-tentar só o produto recusado sem depender de o Item inteiro mudar de novo
 ## Capabilities
 
 ### New Capabilities
-- `pluggy-product-sync-state`: marca d'água por Item **e por fonte real** (`ACCOUNTS`,
-  `ACCOUNT_TRANSACTIONS`, `INVESTMENTS`, `INVESTMENT_TRANSACTIONS`, `LOANS`), usada pela
-  sincronização de posição e pela carga de histórico — cada fonte avança e é re-tentada de forma
-  independente; `CASH`/`CUSTODY` são só agrupamento de elegibilidade da carga de histórico.
+- `pluggy-sync-progress`: marca d'água por Item, **por consumidor** (`POSITION_SYNC`, `HISTORY_LOAD`)
+  **e por fonte real** (`ACCOUNTS`, `ACCOUNT_TRANSACTIONS`, `INVESTMENTS`, `INVESTMENT_TRANSACTIONS`,
+  `LOANS`) — cada combinação avança e é re-tentada de forma independente, inclusive quando dois
+  consumidores acompanham a mesma fonte (`INVESTMENTS`); `CASH`/`CUSTODY` são só agrupamento de
+  elegibilidade da carga de histórico.
 - `pluggy-connection-observability`: último estado observado da conexão de um Item (status bruto da
   Pluggy, produto a produto, e a tradução para o vocabulário de conexão que o produto consome), capturado
   em toda leitura válida do Item, independente de sincronização ter ocorrido.
@@ -106,10 +114,10 @@ de re-tentar só o produto recusado sem depender de o Item inteiro mudar de novo
   `investmentTransactions`, adição de `loans`), `PluggyItem` (enum de status), `PluggyClientGateway`/
   `PluggyConnectorClient` (override de `getApiKey`), `PluggyItemCredentialResolver` (instrumentação de
   chamadas), `RegisterPluggyCredentialImpl`/`Interactor` (captura de connector, instrumentação da
-  validação), `SyncPluggyPositionInteractor`/`Impl` (PARTIAL_SUCCESS por produto), `LoadPluggyHistoryInteractor`/
-  `Impl` (portão por produto), `CheckPluggyCredentialInteractor`/handler (novo shape),
+  validação), `SyncPluggyPositionInteractor`/`Impl` (PARTIAL_SUCCESS por fonte), `LoadPluggyHistoryInteractor`/
+  `Impl` (portão por fonte), `CheckPluggyCredentialInteractor`/handler (novo shape),
   três migrations novas e uma remoção (`radar_pluggy_history_sync_states` dá lugar a
-  `radar_pluggy_product_sync_states`, sem dado real a migrar — tabela vazia em produção/dev hoje).
+  `radar_pluggy_sync_progress`, sem dado real a migrar — tabela vazia em produção/dev hoje).
 - **Contrato HTTP**: `GET /credentials/status` ganha o campo `items[]`, aditivo — `hasCredential`
   mantém shape e posição, o consumidor atual continua funcionando sem alteração. Permite rollout
   backend-first, sem deploy coordenado obrigatório com o front. `POST /credentials`, `GET /portfolio`,

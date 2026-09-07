@@ -94,26 +94,47 @@ resolvido isso em watermark: `load-pluggy-history.impl.ts` monta `cashProduct` d
 `limitedByRateLimit` — a única marca d'água real hoje é `item.lastUpdatedAt`, no nível do Item
 inteiro (`radar_pluggy_history_sync_states`).
 
-A marca d'água nova é por (`itemId`, fonte), onde fonte é o recurso real, não o agrupamento:
-`ACCOUNTS`, `ACCOUNT_TRANSACTIONS` (mapeada da chave `transactions` do SDK — renomeada aqui para não
-colidir com o nome genérico da chave), `INVESTMENTS`, `INVESTMENT_TRANSACTIONS` (chave
-`investmentTransactions`, já corrigida por D7), `LOANS`. `radar_pluggy_history_sync_states` é
-renomeada para `radar_pluggy_product_sync_states`, ganha a coluna `product` (chave composta
-`item_id + product`), com esse vocabulário de cinco fontes.
+A marca d'água nova é por (`itemId`, `consumer`, `source`) — **três** dimensões, não duas. `source` é
+o recurso real, não o agrupamento: `ACCOUNTS`, `ACCOUNT_TRANSACTIONS` (mapeada da chave
+`transactions` do SDK — renomeada aqui para não colidir com o nome genérico da chave),
+`INVESTMENTS`, `INVESTMENT_TRANSACTIONS` (chave `investmentTransactions`, já corrigida por D7),
+`LOANS`. `consumer` é o pipeline que processa aquela fonte: `POSITION_SYNC`
+(`SyncPluggyPositionInteractor`) ou `HISTORY_LOAD` (`LoadPluggyHistoryInteractor`) — nomeados pelo
+próprio interactor consumidor, para não inventar um terceiro vocabulário.
 
-- `SyncPluggyPositionInteractor` lê/avança `INVESTMENTS` e `LOANS` — mesmo vocabulário desta tabela,
-  sem mudança de consumidor.
-- `LoadPluggyHistoryInteractor` lê/avança `ACCOUNTS` e `ACCOUNT_TRANSACTIONS` (fontes de `CASH`) e
-  `INVESTMENTS`/`INVESTMENT_TRANSACTIONS` (fontes de `CUSTODY`). `CASH` é elegível para varredura
-  quando `ACCOUNTS` **ou** `ACCOUNT_TRANSACTIONS` estiver desatualizada (conta nova ou lançamento
-  novo numa conta já conhecida, qualquer um dos dois justifica reler); `CUSTODY`, quando
-  `INVESTMENTS` **ou** `INVESTMENT_TRANSACTIONS` estiver desatualizada. Depois de varrer, cada fonte
-  realmente processada avança a própria marca d'água — nunca as duas juntas como um valor só.
-- `INVESTMENTS` é lida e avançada por **ambos** os interactors — não é vocabulário exclusivo de um
-  consumidor, é o mesmo fato real ("a lista de investimentos deste item mudou") observado por dois
-  casos de uso independentes. Escrever o mesmo valor duas vezes é um no-op, coberto pela regra de
-  "marca d'água nunca retrocede" (`pluggy-product-sync-state`) — sem acoplar os dois interactors
-  entre si, cada um continua só dependendo de `PluggyProductSyncStateRep`.
+**Por que `consumer` é obrigatório, não opcional**: marca d'água não representa "qual versão desta
+fonte existe na Pluggy" — representa "até qual versão desta fonte *este consumidor* processou com
+sucesso". `INVESTMENTS` é acompanhada pelos dois interactors, mas cada um processa algo diferente a
+partir dela: `POSITION_SYNC` grava a fotografia de posição; `HISTORY_LOAD` usa a lista de
+investimentos só para descobrir quais IDs escanear em busca de transações de custódia. Sem a
+dimensão `consumer`, uma chave só (`itemId`, `INVESTMENTS`) seria compartilhada pelos dois: se
+`POSITION_SYNC` roda primeiro (webhook processa posição antes de histórico) e avança essa marca
+d'água para V2, `HISTORY_LOAD` no mesmo ciclo veria `INVESTMENTS` "já em dia" e pularia sua própria
+descoberta de investimentos — mesmo nunca tendo processado nada para custódia. Isso contradiria a
+própria regra de `pluggy-transaction-history` de que mudança em `INVESTMENTS` **ou**
+`INVESTMENT_TRANSACTIONS` torna `CUSTODY` elegível. Com `consumer` na chave, `(POSITION_SYNC,
+INVESTMENTS)` e `(HISTORY_LOAD, INVESTMENTS)` são linhas independentes: o avanço de uma nunca move a
+outra.
+
+**Nomes revistos para deixar as três dimensões explícitas** (a versão anterior deste documento tinha
+só duas — `itemId` + `product` — e por isso escondia esse bug): `radar_pluggy_history_sync_states` é
+renomeada para `radar_pluggy_sync_progress` (não mais "`_product_sync_states`" — a tabela não guarda
+progresso de produto Pluggy, guarda progresso de *consumidor* por fonte), com colunas `item_id`,
+`consumer`, `source` (chave composta `item_id + consumer + source`) e
+`last_completed_source_updated_at`. A entity é `PluggySyncProgress`; o repositório,
+`PluggySyncProgressRep`, com `read(itemId, consumer, source)`/`advance(itemId, consumer, source,
+updatedAt)`. A capability correspondente é renomeada de `pluggy-product-sync-state` para
+`pluggy-sync-progress` no mesmo espírito.
+
+- `SyncPluggyPositionInteractor` lê/avança `(POSITION_SYNC, INVESTMENTS)` e `(POSITION_SYNC, LOANS)`.
+- `LoadPluggyHistoryInteractor` lê/avança `(HISTORY_LOAD, ACCOUNTS)`, `(HISTORY_LOAD,
+  ACCOUNT_TRANSACTIONS)` (fontes de `CASH`) e `(HISTORY_LOAD, INVESTMENTS)`, `(HISTORY_LOAD,
+  INVESTMENT_TRANSACTIONS)` (fontes de `CUSTODY`). `CASH` é elegível para varredura quando
+  `ACCOUNTS` **ou** `ACCOUNT_TRANSACTIONS` (sempre sob `HISTORY_LOAD`) estiver desatualizada (conta
+  nova ou lançamento novo numa conta já conhecida, qualquer um dos dois justifica reler); `CUSTODY`,
+  quando `INVESTMENTS` **ou** `INVESTMENT_TRANSACTIONS` (idem) estiver desatualizada. Depois de
+  varrer, cada fonte realmente processada avança a própria marca d'água — nunca as duas juntas como
+  um valor só, e nunca a marca d'água do outro consumidor.
 
 Isso fecha, para o histórico também, a mesma classe de risco que motivou o pedido original: o portão
 de item-level do histórico já sofria do mesmo problema, só mascarado por `PluggyHistoryCoverage`
@@ -123,20 +144,25 @@ reprocessar qualquer fonte sem observação assim que o portão de item reabre.
 - Criar uma tabela nova só para posição, deixando a de histórico como estava — rejeitada por deixar
   duas semânticas de watermark concorrentes no mesmo código, e por deixar sem correção um risco que
   já existia no histórico.
-- Manter `CASH`/`CUSTODY` como o próprio vocabulário de produto da marca d'água (a versão original
+- Manter `CASH`/`CUSTODY` como o próprio vocabulário de produto da marca d'água (a primeira revisão
   deste documento) — rejeitada porque nenhuma das duas tem um único `lastUpdatedAt` real na Pluggy;
   a composição de duas chaves (`accounts`+`transactions`, `investments`+`investmentTransactions`) em
   um valor só exigiria escolher implicitamente `MAX`, `MIN` ou o `lastUpdatedAt` do Item, e qualquer
   uma dessas escolhas perde atualização (`MIN`) ou reprocessa fonte que não mudou (`MAX`,
   `Item.lastUpdatedAt`) sem necessidade.
+- Chave só (`itemId`, `source`), com `INVESTMENTS` compartilhada entre os dois interactors (a
+  segunda revisão deste documento) — rejeitada porque um consumidor avançar a marca d'água libera
+  (incorretamente) o outro de processar sua própria parte, exatamente o cenário descrito acima; a
+  marca d'água precisa representar progresso de um consumidor específico, não um fato só sobre a
+  fonte.
 
 ### D5 — `radar_pluggy_items` preserva, sem reinterpretação, "última ingestão completa e bem-sucedida"
 A marca d'água de item (`radar_pluggy_items.last_updated_at`) só avança quando
-`executionStatus === 'SUCCESS'` — nunca em `PARTIAL_SUCCESS`, mesmo que um ou mais produtos tenham
-sido processados. O portão de entrada do interactor (decidir se vale a pena tentar o ciclo) passa a
-ser a união de "watermark de item está velha" OU "algum watermark de produto está velha" — nunca só
-a de item. O que decide se um produto específico é retentado é sempre a marca d'água daquele
-produto, nunca a de item.
+`executionStatus === 'SUCCESS'` — nunca em `PARTIAL_SUCCESS`, mesmo que uma ou mais fontes tenham
+sido processadas. O portão de entrada do interactor (decidir se vale a pena tentar o ciclo) passa a
+ser a união de "watermark de item está velha" OU "alguma marca d'água de `(consumer, source)` daquele
+interactor está velha" — nunca só a de item. O que decide se uma fonte específica é retentada é
+sempre a marca d'água daquele `(consumer, source)`, nunca a de item.
 
 **Alternativa descartada**: avançar a marca d'água de item também em execuções parciais (a versão
 originalmente proposta antes desta rodada) — revertida porque mudava silenciosamente o significado já
@@ -197,6 +223,14 @@ chamada busca e persiste a observação; qualquer chamada seguinte, no mesmo esc
 snapshot sem nova rede. Os dois interactors continuam chamando `read(itemId)` sem saber um do outro —
 zero acoplamento de contrato entre eles.
 
+`PluggyItemStateResolver.read` só é chamado por consumidores que já assumem o vínculo
+credencial↔item existente (`SyncPluggyPositionImpl`, `LoadPluggyHistoryImpl` — ambos recebem um
+`itemId` que só existe neste serviço depois de `assertItemAccess` confirmar o vínculo). A leitura de
+validação pré-vínculo (`RegisterPluggyCredentialImpl.validateItemAccess`, D3) usa um `freshClient`
+próprio, fora deste resolver, e por isso nunca escreve em `radar_pluggy_item_observations` — só em
+`radar_pluggy_calls` (D2/D3). Não existe credencial↔item persistida ainda para associar a observação
+a essa leitura; ver `pluggy-connection-observability`.
+
 **Alternativa descartada**: `SyncPluggyPositionOutput` carregar o snapshot para
 `LoadPluggyHistoryInput` consumir — rejeitada por acoplar dois interactors independentes ao mesmo
 formato de dado bruto da Pluggy, violando "gateway do próprio caso de uso, não conhece outro caso de
@@ -214,15 +248,29 @@ proíbe. `Item.lastUpdatedAt` da Pluggy também não serve: o `status`/`executio
 `PluggyItemStateResolver.read(itemId)` captura `observationStartedAt = new Date()` **antes** de
 chamar `fetchItem` — não depois. O fluxo é: captura `observationStartedAt` → `fetchItem` →
 parse/validação → upsert condicional (`UPDATE radar_pluggy_item_observations SET ... WHERE item_id =
-? AND observation_started_at <= ?` seguido de `INSERT ... ON DUPLICATE KEY` equivalente quando a
+? AND observation_started_at < ?` seguido de `INSERT ... ON DUPLICATE KEY` equivalente quando a
 linha não existe, ou a formulação Sequelize/MySQL equivalente — o ponto fixo é a condição
-`incoming.observationStartedAt >= stored.observationStartedAt` decidir a escrita, nunca o instante do
+`incoming.observationStartedAt > stored.observationStartedAt` decidir a escrita, nunca o instante do
 save). No exemplo acima, A carrega `observationStartedAt = 10:00`, B carrega `10:01`; não importa
 que A termine depois — sua escrita perde para a de B (10:01 > 10:00) porque a comparação é entre os
 dois `observationStartedAt`, não entre os instantes de término.
 
+**Empate exato (`incoming.observationStartedAt === stored.observationStartedAt`)**: `Date` em Node
+tem resolução de milissegundos — duas leituras concorrentes podem capturar o mesmo instante. A
+condição é estritamente `>` (não `>=`): em caso de empate, a escrita que chega depois encontra a
+condição falsa (igual não é maior) e é recusada — a que já está gravada permanece, ou seja, **a
+primeira gravação a comitar vence o empate**, não necessariamente a primeira a ter começado. É uma
+garantia mais fraca que "a leitura que começou primeiro sempre vence" nesse caso específico de
+empate exato, mas nunca há dupla gravação nem estado indeterminado: exatamente uma das duas escritas
+prevalece, de forma determinística no banco (a segunda `UPDATE` a rodar não casa a condição `<` e
+afeta zero linhas).
+
 **Alternativa descartada**: `observedAt` = instante do save — descartada porque não resolve o
 cenário de corrida acima, e é exatamente o requisito que motivou esta revisão.
+**Alternativa descartada**: condição `>=` (a versão anterior deste documento) — descartada porque em
+caso de empate exato permitiria a segunda escrita a chegar sobrescrever a primeira sem necessidade
+real de avanço, prometendo uma ordenação mais fina do que o token consegue distinguir em milissegundo
+igual.
 
 ### D10 — `/credentials/status` muda de shape porque a granularidade certa é por item, não por pessoa
 Uma pessoa pode ter mais de um Item vinculado (`PluggyCredentialItem` já modela isso). Um único
@@ -236,11 +284,11 @@ resposta passa a ser `{hasCredential, items: [...]}`, cada item com seu `connect
   confirmadas nos bancos consultados) → **[Mitigação]** coluna nasce nullable; `PluggyItemStateResolver`
   reescreve os campos de connector sempre que os lê de novo, então a próxima leitura bem-sucedida
   desses itens já preenche retroativamente, sem script de backfill.
-- **[Risco]** Mudar o portão de posição/histórico de item-level para por-produto aumenta o número de
-  vezes que o item é relido quando um produto específico está preso (o item-level watermark deixa de
-  bloquear sozinho) → **[Mitigação]** é o comportamento pedido explicitamente — tentar de novo é
-  mais seguro que esquecer um produto, e o custo é só chamada técnica, não quota Open Finance (ver
-  ADR já fechado).
+- **[Risco]** Mudar o portão de posição/histórico de item-level para por-`(consumer, source)` aumenta
+  o número de vezes que o item é relido quando uma fonte específica está presa (o item-level
+  watermark deixa de bloquear sozinho) → **[Mitigação]** é o comportamento pedido explicitamente —
+  tentar de novo é mais seguro que esquecer uma fonte, e o custo é só chamada técnica, não quota
+  Open Finance (ver ADR já fechado).
 - **[Risco]** `GET /credentials/status` ganha `items[]`, mas o `oplab-radar-front` só passa a
   consumir esse campo num PR próprio, depois da publicação deste change → **[Mitigação]** risco
   baixo porque a mudança é aditiva (D10): `hasCredential` mantém shape e posição, o front atual
@@ -265,7 +313,7 @@ resposta passa a ser `{hasCredential, items: [...]}`, cada item com seu `connect
 1. Migrations aditivas primeiro (`radar_pluggy_item_observations`, `radar_pluggy_calls`,
    `radar_pluggy_credential_items` + colunas de connector) — não quebram nada em produção porque
    nenhum código ainda as lê.
-2. Migration de `radar_pluggy_product_sync_states` (cria) + remoção de
+2. Migration de `radar_pluggy_sync_progress` (cria, com `consumer` + `source`) + remoção de
    `radar_pluggy_history_sync_states` (drop) na mesma migration — seguro porque a tabela está vazia
    em todos os ambientes consultados; se algum ambiente tiver dado real não capturado aqui, a
    migration deve ser revisada antes de rodar lá.

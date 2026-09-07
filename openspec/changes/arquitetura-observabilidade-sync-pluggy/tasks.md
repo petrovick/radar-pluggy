@@ -15,29 +15,33 @@
       `load-pluggy-history.interactor.test.ts` continua verde após ajustar os fixtures para
       `isUpdated`
 
-## 2. Marca d'água por fonte real (D4, D5)
+## 2. Marca d'água por consumidor e por fonte real (D4, D5)
 
-- [ ] 2.1 Migration: criar `radar_pluggy_product_sync_states` (`item_id`, `product` — valores
-      `ACCOUNTS`, `ACCOUNT_TRANSACTIONS`, `INVESTMENTS`, `INVESTMENT_TRANSACTIONS`, `LOANS` —,
-      `last_completed_product_updated_at`, índice único `(item_id, product)`) e remover
-      `radar_pluggy_history_sync_states` na mesma migration; verificar com `npm run migrate` limpo
-      em banco vazio
-- [ ] 2.2 Entity `PluggyProductSyncState` (create/reconstitute, avanço sem regressão) e
-      `PluggyProductSyncStateRep` (`read(itemId, product)`, `advance(itemId, product, updatedAt)`);
-      verificar com teste de contrato modelo↔migration e teste de recusa de regressão
+- [ ] 2.1 Migration: criar `radar_pluggy_sync_progress` (`item_id`, `consumer` — valores
+      `POSITION_SYNC`, `HISTORY_LOAD` —, `source` — valores `ACCOUNTS`, `ACCOUNT_TRANSACTIONS`,
+      `INVESTMENTS`, `INVESTMENT_TRANSACTIONS`, `LOANS` —, `last_completed_source_updated_at`,
+      índice único `(item_id, consumer, source)`) e remover `radar_pluggy_history_sync_states` na
+      mesma migration; verificar com `npm run migrate` limpo em banco vazio
+- [ ] 2.2 Entity `PluggySyncProgress` (create/reconstitute, avanço sem regressão) e
+      `PluggySyncProgressRep` (`read(itemId, consumer, source)`, `advance(itemId, consumer, source,
+      updatedAt)`); verificar com teste de contrato modelo↔migration e teste de recusa de regressão
 - [ ] 2.3 `LoadPluggyHistoryImpl`/`Interactor`: portão passa de `radar_pluggy_history_sync_states`
-      (item-level) para `PluggyProductSyncStateRep` por fonte real — `CASH` elegível quando
-      `ACCOUNTS` ou `ACCOUNT_TRANSACTIONS` estiver desatualizada; `CUSTODY`, quando `INVESTMENTS` ou
-      `INVESTMENT_TRANSACTIONS` estiver desatualizada; cada fonte processada avança sua própria
-      marca d'água, nunca as duas de um agrupamento como um valor só; verificar com os cenários da
-      spec `pluggy-transaction-history` (dia sem mudança em nenhuma fonte vs. um agrupamento avança
-      sem esperar o outro vs. uma fonte do mesmo agrupamento avança sem esperar a outra)
+      (item-level) para `PluggySyncProgressRep` com `consumer = HISTORY_LOAD` — `CASH` elegível
+      quando `(HISTORY_LOAD, ACCOUNTS)` ou `(HISTORY_LOAD, ACCOUNT_TRANSACTIONS)` estiver
+      desatualizada; `CUSTODY`, quando `(HISTORY_LOAD, INVESTMENTS)` ou `(HISTORY_LOAD,
+      INVESTMENT_TRANSACTIONS)` estiver desatualizada; cada fonte processada avança sua própria
+      marca d'água sob `HISTORY_LOAD`, nunca as duas de um agrupamento como um valor só; verificar
+      com os cenários da spec `pluggy-transaction-history` (dia sem mudança em nenhuma fonte vs. um
+      agrupamento avança sem esperar o outro vs. uma fonte do mesmo agrupamento avança sem esperar a
+      outra)
 - [ ] 2.4 `SyncPluggyPositionImpl`/`Interactor`: aceitar `executionStatus` `SUCCESS` ou
       `PARTIAL_SUCCESS`; processar `investments`/`loans` de forma independente usando 1.3,
-      avançando `INVESTMENTS`/`LOANS` em `PluggyProductSyncStateRep` — mesma tabela e mesmo
-      vocabulário de `INVESTMENTS` que 2.3 lê para `CUSTODY`; recusa de lista vazia só quando o
-      produto foi de fato tentado; verificar com os cenários da spec `pluggy-position-sync` (produto
-      recusado não impede o outro, produto recusado não é lista vazia)
+      avançando `(POSITION_SYNC, INVESTMENTS)`/`(POSITION_SYNC, LOANS)` em `PluggySyncProgressRep` —
+      linhas próprias deste consumidor, nunca as de `HISTORY_LOAD` para `INVESTMENTS`; recusa de
+      lista vazia só quando o produto foi de fato tentado; verificar com os cenários da spec
+      `pluggy-position-sync` (produto recusado não impede o outro, produto recusado não é lista
+      vazia) e um teste específico de que `SyncPluggyPositionImpl` avançar `(POSITION_SYNC,
+      INVESTMENTS)` não altera `(HISTORY_LOAD, INVESTMENTS)` (cenário da spec `pluggy-sync-progress`)
 - [ ] 2.5 `radar_pluggy_items.last_updated_at`: confirmar (teste de regressão) que só avança quando
       `executionStatus === 'SUCCESS'`, nunca em `PARTIAL_SUCCESS`, mesmo com produto processado
 
@@ -67,7 +71,10 @@
       gera nenhuma
 - [ ] 3.6 Aplicar `instrumentPluggyClient` em `PluggyItemCredentialResolver.clientFor` (client
       cacheado) e em `RegisterPluggyCredentialImpl.validateItemAccess` (`freshClient`); verificar
-      que as duas chamadas geram linha em `radar_pluggy_calls`, com `item_id` preenchido nas duas
+      que as duas chamadas geram linha em `radar_pluggy_calls`, com `item_id` preenchido nas duas, e
+      que `validateItemAccess` (leitura pré-vínculo, `freshClient`, fora de
+      `PluggyItemStateResolver`) nunca cria nem atualiza linha em `radar_pluggy_item_observations`
+      (cenário da spec `pluggy-connection-observability`)
 - [ ] 3.7 `runWithCallContext` nos pontos de entrada: `webhook-drainer.ts` (`trigger=WEBHOOK` +
       `webhookEventId`), `index.ts` no boot (`trigger=BOOT_RECOVERY` — inclui passar um parâmetro
       novo para `drainPluggyWebhookEvents` distinguir os dois casos),
@@ -82,14 +89,16 @@
 - [ ] 4.1 `PluggyItemsGateway.parseItem`: extrair `connector: {id, name, imageUrl, primaryColor}` do
       payload, hoje descartado; verificar com teste que `PluggyItemSnapshot.connector` é preenchido
       a partir de um payload real de `Item`
-- [ ] 4.2 `PluggyItemStateResolver` (novo, `.scoped()`, cache por escopo de trabalho): `read(itemId)`
-      captura `observationStartedAt = new Date()` **antes** de chamar `fetchItem` (D9.1), busca via
+- [ ] 4.2 `PluggyItemStateResolver` (novo, `.scoped()`, cache por escopo de trabalho, usado só por
+      consumidores de item já vinculado — nunca por `validateItemAccess`): `read(itemId)` captura
+      `observationStartedAt = new Date()` **antes** de chamar `fetchItem` (D9.1), busca via
       `PluggyItemCredentialResolver` + `PluggyItemsGateway`, persiste `radar_pluggy_item_observations`
-      por upsert condicional (`incoming.observationStartedAt >= stored.observationStartedAt`,
-      transação própria) e devolve o snapshot; segunda chamada no mesmo escopo não bate na rede;
-      verificar com teste contando chamadas ao client mockado e teste de que uma observação com
-      `observationStartedAt` menor que a já registrada não sobrescreve (cenário da spec
-      `pluggy-connection-observability`)
+      por upsert condicional (`incoming.observationStartedAt > stored.observationStartedAt` —
+      estritamente maior, empate nunca sobrescreve, transação própria) e devolve o snapshot; segunda
+      chamada no mesmo escopo não bate na rede; verificar com teste contando chamadas ao client
+      mockado, teste de que uma observação com `observationStartedAt` menor que a já registrada não
+      sobrescreve, e teste de que duas observações com `observationStartedAt` idêntico não se
+      sobrescrevem mutuamente (cenários da spec `pluggy-connection-observability`)
 - [ ] 4.2.1 `PluggyItemStateResolver.read`: sempre que o snapshot trouxer `connector` válido,
       regravar `connector_id`/`connector_name`/`connector_image_url`/`connector_primary_color` no
       vínculo credencial↔item correspondente (`radar_pluggy_credential_items`) — mesmo valor já
