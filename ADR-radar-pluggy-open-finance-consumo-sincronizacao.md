@@ -9,6 +9,43 @@
 
 ---
 
+> ## STATUS: SUPERSEDED IN PART (2026-09-07)
+>
+> Este ADR permanece válido como registro histórico da investigação e como fonte de verdade para as
+> decisões que ele fixa e que **nenhum change posterior revogou** (fronteira A/B, `GET` paginado não
+> consome quota Open Finance, sem Admission Control/scheduler/budget por página, sem Postgres — ver
+> seção 1 e o resumo final).
+>
+> Para qualquer conflito relacionado às áreas abaixo, **a fonte de verdade passa a ser**
+> `openspec/changes/arquitetura-observabilidade-sync-pluggy/` (proposal.md, design.md, specs/,
+> tasks.md) — não este documento:
+>
+> - **Observabilidade de conexão** (estado observado por Item, tradução de `connectionStatus`,
+>   `DISCONNECTED` para item removido) — não coberto aqui.
+> - **Marca d'água de sincronização** — este ADR ainda descreve um watermark único, global, por
+>   Item (seções 16, 19–20, diagrama `PLUGGY_ITEM ||--o| PLUGGY_HISTORY_SYNC_STATE`); a decisão final
+>   é por `(item, consumer, source)` — `pluggy-sync-progress` no OpenSpec.
+> - **`PARTIAL_SUCCESS` na sincronização de posição** — a seção 20 e a "Fase 3" (checklist) tratam
+>   isso como ponto em aberto ("avaliar se..."); já foi decidido e implementado no OpenSpec
+>   (`pluggy-position-sync`, `pluggy-sync-progress`).
+> - **Decisão sobre o `warning code` (`"423"`)** — a seção 57.2/checklist final ("corrigir: warning
+>   code 423") tratava isso como pendência; a decisão final é que nenhum código de warning governa
+>   negócio, só `isUpdated` (`isUsable` no vocabulário de domínio) — ver `pluggy-sync-progress`.
+> - **Coordenação de ingestão** (lease por Item entre triggers, Position/History independentes) —
+>   não coberto aqui; `pluggy-ingestion-coordination` no OpenSpec.
+> - **Histórico de chamadas (`radar_pluggy_calls`)** — este ADR pede "auditar nossas chamadas" como
+>   item futuro (seção final); o schema, a instrumentação e as garantias finais estão em
+>   `pluggy-call-history` no OpenSpec, não aqui.
+> - **Connector/Item products** (capability da instituição vs. produtos habilitados no Item) — não
+>   coberto aqui.
+> - **Reconciliação de fotografia em lista vazia** — este ADR não trata do caso "lista vazia
+>   autoritativa"; a decisão final está em `pluggy-position-sync`/`pluggy-transaction-history`.
+>
+> Não reintroduzir nenhuma dessas seções como normativa só porque aparecem neste ADR — o ADR
+> registra o estado da investigação num ponto anterior; o OpenSpec registra a decisão final.
+
+---
+
 ## 0. Como usar este documento
 
 Este ADR foi preparado para servir simultaneamente como:
@@ -2650,5 +2687,10 @@ Então:
 ```
 
 ---
+
+> Lembrete (ver banner no topo): para observabilidade, sync progress, ingestion coordination, call
+> history, `PARTIAL_SUCCESS`, connector/item products e reconciliação de lista vazia, a fonte de
+> verdade é `openspec/changes/arquitetura-observabilidade-sync-pluggy/`, não os itens "Corrigir"/
+> "Manter" listados acima.
 
 **Fim do ADR.**

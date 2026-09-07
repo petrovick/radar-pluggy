@@ -37,7 +37,23 @@ esta revisão fecha juntos, porque todos afetam a mesma orquestração:
 - **A premissa original desta proposta sobre `Item.statusDetail` estava errada**: a documentação da
   Pluggy e o próprio `.d.ts` do SDK instalado mostram `statusDetail: null` quando `executionStatus`
   é `SUCCESS` — só existe quando é `PARTIAL_SUCCESS`. Um watermark por fonte não pode depender de um
-  campo que não existe na maioria das execuções.
+  campo que não existe na maioria das execuções. `Item.lastUpdatedAt` também é nullable mesmo em
+  `SUCCESS` — a documentação oficial traz esse exemplo real.
+- **`Connector.products` (o que a instituição suporta) não é o mesmo que os produtos habilitados
+  neste Item específico** (`Item.products`, confirmado no OpenAPI/documentação atual, embora ausente
+  do `.d.ts` do SDK instalado): um Item pode ser criado só com `ACCOUNTS`/`TRANSACTIONS` mesmo que o
+  connector suporte `INVESTMENTS`. Tratar os dois como a mesma coisa faria o serviço chamar
+  `GET /investments` para itens que nunca pediram esse produto, e poderia mostrar "vazio real" para
+  uma fonte que na verdade nunca foi solicitada.
+- **O lease de ingestão (planejado na rodada anterior) tinha TTL sem renovação**: uma carga de
+  histórico longa poderia ultrapassar o prazo do lease, permitindo duas ingestões simultâneas do
+  mesmo Item — exatamente o que a capability promete impedir.
+- **O drenador de webhook ignora todo evento exceto `item/created`/`item/updated`**, mas a inscrição
+  já pede `event: 'all'`. Um `item/error` (a Pluggy documenta que ele para o auto-sync daquele Item)
+  nunca atualiza o estado observado — o titular pode continuar vendo `CONNECTED` depois de uma
+  quebra real, e um `item/deleted` (a Pluggy pode emitir automaticamente, por exemplo por
+  depreciação de connector) não tem nenhum tratamento — o Item apagado continuaria contribuindo
+  fotografia para Carteira/Cartão.
 
 ## Dependência: PR #12
 
@@ -61,32 +77,42 @@ aqui, e o PR #12 é rebaseado ou substituído no momento da implementação.
   D9.1) e atualizar o connector do vínculo é a **mesma decisão atômica**: observação recusada nunca
   deixa o connector ser sobrescrito por um payload mais antigo.
 - `GET /credentials/status` mantém `hasCredential` e passa a devolver, também, por item vinculado,
-  um `connectionStatus` de Item **e o estado de cada fonte suportada** (`sources`: `supported`,
-  `isUpdated`, `lastUpdatedAt`) mais `lastUpdatedAt`, `nextAutoSyncAt` e a identidade do connector
-  (incluindo os produtos que ele suporta), num novo campo `items[]`. **Aditivo, não breaking**: o
-  `oplab-radar-front` hoje só lê `response.hasCredential` (`pluggy-credentials.api.ts`) e esse campo
-  continua no mesmo lugar, com o mesmo tipo — o backend pode publicar antes do front, sem deploy
-  coordenado. O front passa a consumir `items[]` depois, quando o PR próprio dele for feito.
+  um `connectionStatus` de Item (agora incluindo `DISCONNECTED`, para item removido pela Pluggy)
+  **e o estado de cada fonte** (`sources`: `supportedByConnector` — capability da instituição —,
+  `enabledForItem` — produto habilitado neste Item específico, distinto do anterior, podendo ser
+  desconhecido — e, só quando habilitado, `isUpdated`/`lastUpdatedAt`) mais `lastUpdatedAt`,
+  `nextAutoSyncAt` e a identidade do connector (incluindo os produtos que ele suporta), num novo
+  campo `items[]`. **Aditivo, não breaking**: o `oplab-radar-front` hoje só lê
+  `response.hasCredential` (`pluggy-credentials.api.ts`) e esse campo continua no mesmo lugar, com o
+  mesmo tipo — o backend pode publicar antes do front, sem deploy coordenado. O front passa a
+  consumir `items[]` depois, quando o PR próprio dele for feito.
 - Passa a existir um **histórico append-only de chamadas** à Pluggy (`radar_pluggy_calls`), com
-  schema completo (item, connector, operação, rota, escopo, origem, correlação, tempos, resultado —
-  nunca corpo de requisição/resposta nem segredo), classificado por `call_scope` e por `trigger` de
-  origem — incluindo o evento real de autenticação (`POST /auth`) e o provisionamento de webhook
-  (`PluggyWebhookProvisioner`, hoje fora de qualquer instrumentação planejada), interceptados no
-  ponto exato onde o SDK os dispara. A gravação é sempre uma tentativa best-effort **depois** de a
-  chamada real terminar — nunca no caminho crítico da chamada de negócio.
+  schema completo (item, connector, operação, rota, escopo, origem, correlação, ordinal de página,
+  tempos, resultado com taxonomia de falha — nunca corpo de requisição/resposta nem segredo nem
+  cursor opaco), classificado por `call_scope` e por `trigger` de origem — incluindo o evento real de
+  autenticação (`POST /auth`) e o provisionamento de webhook (`PluggyWebhookProvisioner`, hoje fora
+  de qualquer instrumentação planejada), interceptados no ponto exato onde o SDK os dispara. Quem
+  grava é um serviço singleton (`PluggyCallRecorder`), explícito por DI — nunca um repositório
+  escondido dentro do contexto assíncrono que carrega só `trigger`/correlação/ordinal. A gravação é
+  sempre uma tentativa best-effort **depois** de a chamada real terminar — nunca no caminho crítico
+  da chamada de negócio.
 - A marca d'água de sincronização deixa de ser só por Item — passa a existir por **consumidor e por
   fonte real dentro do Item** (`radar_pluggy_sync_progress`): `POSITION_SYNC` acompanha `INVESTMENTS`
   e `LOANS`; `HISTORY_LOAD` acompanha `ACCOUNTS`, `ACCOUNT_TRANSACTIONS`, `INVESTMENTS` e
   `INVESTMENT_TRANSACTIONS`. O campo armazenado (`last_completed_version_at`) representa "até qual
   versão da execução aquele consumidor concluiu aquela fonte" — `Item.lastUpdatedAt` quando
-  `executionStatus` é `SUCCESS` (`statusDetail` é `null` neste caso), ou
-  `statusDetail.<fonte>.lastUpdatedAt` quando `PARTIAL_SUCCESS` e a fonte tiver `isUpdated === true`.
+  `executionStatus` é `SUCCESS` (`statusDetail` é `null` neste caso; se `lastUpdatedAt` também for
+  `null`, usa `Item.updatedAt`, não-nullable), ou `statusDetail.<fonte>.lastUpdatedAt` quando
+  `PARTIAL_SUCCESS` e a fonte tiver `isUpdated === true` (uma fonte `isUpdated === true` sem
+  `lastUpdatedAt` é resposta inconsistente — recusa nomeada, nunca inventa valor).
   `ACCOUNT_TRANSACTIONS` depende de `ACCOUNTS` estar utilizável na mesma execução (não dá pra
   declarar transações completas sem a lista atual de contas); mesma relação entre
-  `INVESTMENT_TRANSACTIONS` e `INVESTMENTS`. `CASH` (`ACCOUNTS` e `ACCOUNT_TRANSACTIONS`) e `CUSTODY`
-  (`INVESTMENTS` e `INVESTMENT_TRANSACTIONS`), ambos do consumidor `HISTORY_LOAD`, continuam sendo só
-  agrupamentos de elegibilidade, nunca marca d'água própria. `INVESTMENTS` é acompanhada pelos dois
-  consumidores, cada um com sua própria linha — um avançar nunca avança o do outro.
+  `INVESTMENT_TRANSACTIONS` e `INVESTMENTS`. Nenhuma fonte é elegível se não estiver habilitada para
+  o Item (`enabledForItem`, distinto de o connector suportá-la). `CASH` (`ACCOUNTS` e
+  `ACCOUNT_TRANSACTIONS`) e `CUSTODY` (`INVESTMENTS` e `INVESTMENT_TRANSACTIONS`), ambos do
+  consumidor `HISTORY_LOAD`, continuam sendo só agrupamentos de elegibilidade, nunca marca d'água
+  própria. `INVESTMENTS` é acompanhada pelos dois consumidores, cada um com sua própria linha — um
+  avançar nunca avança o do outro.
 - **Position e History passam a rodar de forma independente**: cada um executa, tem seu resultado
   capturado, e só depois a unidade de trabalho decide sucesso/falha. Falha de um nunca impede o outro
   de sequer tentar; a próxima tentativa é barata para quem já concluiu, porque a marca d'água própria
@@ -94,8 +120,20 @@ aqui, e o PR #12 é rebaseado ou substituído no momento da implementação.
 - **Nasce um lease de ingestão por Item**, compartilhado por todo trigger que dispara Position+History
   (`WEBHOOK`, `CREDENTIAL_REGISTRATION_PRELOAD`, `BOOT_RECOVERY`, `MANUAL_HISTORY_LOAD`) — MySQL, sem
   Redis, mesmo idioma de claim atômico já usado pelo lease de evento de webhook
-  (`PluggyWebhookEventRep`). Garantia final: no máximo uma ingestão de um Item roda por vez,
-  independente de quem disparou.
+  (`PluggyWebhookEventRep`), com token de posse monotônico (nunca timestamp) e renovação periódica
+  (heartbeat) enquanto o trabalho estiver em andamento, para uma carga longa não deixar o lease
+  expirar sozinho. O lease evita trabalho duplicado; a integridade do dado nunca depende só dele —
+  a escrita atômica de marca d'água/observação é quem garante isso mesmo numa sobreposição residual.
+- **Eventos de webhook além de `item/created`/`item/updated` passam a ser tratados**: `item/error`,
+  `item/waiting_user_input`, `item/waiting_user_action` e `item/login_succeeded` atualizam o estado
+  observado (sem rodar Position/History); `item/deleted` marca o vínculo credencial↔item inativo,
+  sem tentar reler o Item — `connectionStatus` vira `DISCONNECTED`, e o Item para de contribuir
+  fotografia para `/portfolio`/`/accounts`, preservando snapshot/raw histórico.
+- **Produtos habilitados no Item (`itemProducts`) passam a ser distintos dos suportados pelo
+  connector (`connectorProducts`)**: uma fonte que o connector suporta mas que este Item não pediu
+  nunca é tratada como elegível por nenhum pipeline, nem aparece como "atualizada" em
+  `/credentials/status`. Quando o payload não permitir saber os produtos do Item, o estado fica
+  `UNKNOWN` — nunca inferido da capability do connector.
 - Corrige três divergências encontradas entre o código e o SDK realmente instalado
   (`pluggy-sdk@^0.90.0`): a chave `statusDetail.investmentTransactions` (o código lia
   `investmentsTransactions`, no plural, e nunca batia), os status de Item `WAITING_USER_ACTION` e
@@ -133,55 +171,71 @@ aqui, e o PR #12 é rebaseado ou substituído no momento da implementação.
   respeitando a dependência de `ACCOUNT_TRANSACTIONS`/`INVESTMENT_TRANSACTIONS` na fonte de
   descoberta correspondente; `CASH`/`CUSTODY` são só agrupamento de elegibilidade.
 - `pluggy-connection-observability`: último estado observado da conexão de um Item já vinculado
-  (status bruto da Pluggy, produto a produto, e a tradução para o vocabulário de conexão que o
-  produto consome), capturado em toda leitura válida do Item, com aceitação de observação e
-  atualização de connector decididas atomicamente.
+  (status bruto da Pluggy, produto a produto, produtos habilitados no próprio Item — distintos dos
+  suportados pelo connector —, e a tradução para o vocabulário de conexão, incluindo `DISCONNECTED`
+  para item removido pela Pluggy), capturado em toda leitura válida do Item — inclusive eventos de
+  webhook além de `item/created`/`item/updated` —, com aceitação de observação e atualização de
+  connector decididas atomicamente.
 - `pluggy-call-history`: registro append-only de toda chamada que o `radar-pluggy` faz à Pluggy —
   autenticação, leitura de snapshot, configuração de plataforma (incluindo provisionamento de
-  webhook) — com classificação, origem, resultado e schema completo, sem funcionar como lock, lease
-  ou contador de quota.
+  webhook) — com classificação, origem, resultado com taxonomia de falha e schema completo (incluindo
+  ordinal de página), sem funcionar como lock, lease ou contador de quota.
 - `pluggy-ingestion-coordination`: garante no máximo uma ingestão (Position+History) por Item
-  executando por vez, qualquer que seja o trigger, e que Position e History dentro de uma mesma
-  ingestão rodem de forma independente — falha de um nunca impede o outro de ser tentado.
+  executando por vez, qualquer que seja o trigger (lease com token de posse monotônico e renovação
+  periódica), e que Position e History dentro de uma mesma ingestão rodem de forma independente —
+  falha de um nunca impede o outro de ser tentado.
 
 ### Modified Capabilities
 - `pluggy-item`: `status` passa a aceitar o conjunto completo documentado pelo SDK instalado
   (inclui `WAITING_USER_ACTION` e `MERGING`); o registro ganha identidade de connector
-  (`connectorId`, `connectorName`, `connectorImageUrl`, `connectorPrimaryColor`, `connectorProducts`),
-  capturada no cadastro e atualizada em toda observação subsequente aceita do Item.
+  (`connectorId`, `connectorName`, `connectorImageUrl`, `connectorPrimaryColor`, `connectorProducts`
+  — capability da instituição), capturada no cadastro e atualizada em toda observação subsequente
+  aceita do Item; os produtos habilitados **deste Item** (`itemProducts`, distintos de
+  `connectorProducts`) passam a ser observados e persistidos separadamente.
 - `pluggy-position-sync`: a sincronização passa a poder avançar com `executionStatus`
   `PARTIAL_SUCCESS`, processando `investments`/`loans` de forma independente por fonte (usando
-  `isUsable`, não `limitedByRateLimit`); o portão de entrada some do nível de Item para o nível de
-  fonte; lista vazia de uma fonte utilizável deixa de ser erro incondicional — passa a reconciliar a
-  fotografia atual (remove o que não veio mais), preservando a recusa nomeada só quando a fonte não
-  foi de fato tentada.
+  `isUsable`, não `limitedByRateLimit`), nunca para uma fonte não habilitada para o Item; o portão de
+  entrada some do nível de Item para o nível de fonte; lista vazia de uma fonte utilizável deixa de
+  ser erro incondicional — passa a reconciliar a fotografia atual (remove o que não veio mais),
+  preservando a recusa nomeada só quando a fonte não foi de fato tentada; item inativo
+  (`item/deleted`) para de contribuir posição para `GET /portfolio`.
 - `pluggy-transaction-history`: o portão de "atualização diária reativa" passa do nível de Item para
   o nível de fonte real, com a dependência formal de `ACCOUNT_TRANSACTIONS`/`INVESTMENT_TRANSACTIONS`
   na respectiva fonte de descoberta; `Account.updatedAt`/`Investment.updatedAt` deixam de ser
   condição necessária para decidir se uma fonte de transação é varrida — viram, no máximo, otimização
-  documentada; "produto limitado não é vazio" passa a se basear em `isUsable`.
-- `pluggy-credentials`: `GET /credentials/status` passa a expor conexão e estado por fonte por item
-  vinculado (não só um booleano e um status agregado); o cadastro passa a capturar e persistir a
-  identidade e os produtos do connector do item; a validação de credencial nova (antes do vínculo
-  existir) passa a ser registrada no histórico de chamadas.
+  documentada; "produto limitado não é vazio" passa a se basear em `isUsable`; leitura de contas
+  reconcilia a fotografia atual do mesmo jeito que posição; item inativo (`item/deleted`) para de
+  contribuir contas para `GET /accounts`.
+- `pluggy-credentials`: `GET /credentials/status` passa a expor conexão (incluindo `DISCONNECTED`) e
+  estado por fonte por item vinculado — distinguindo `supportedByConnector` de `enabledForItem` —
+  não só um booleano e um status agregado; o cadastro passa a capturar e persistir a identidade e os
+  produtos do connector do item; a validação de credencial nova (antes do vínculo existir) passa a
+  ser registrada no histórico de chamadas.
 
 ## Impact
 
-- **Código afetado, `radar-pluggy`**: `PluggyItemsGateway` (parse de `connector`+produtos, correção
-  de chave `investmentTransactions`, adição de `loans`), `PluggyItem` (enum de status),
-  `PluggyClientGateway`/`PluggyConnectorClient` (override de `getApiKey`), `PluggyWebhookProvisioner`
-  (instrumentação, hoje descoberta), `PluggyItemCredentialResolver` (instrumentação de chamadas),
-  `RegisterPluggyCredentialImpl`/`Interactor` (captura de connector, instrumentação da validação),
-  `SyncPluggyPositionInteractor`/`Impl` (`PARTIAL_SUCCESS` por fonte, reconciliação de fotografia,
-  escrita atômica), `LoadPluggyHistoryInteractor`/`Impl` (portão por fonte, dependência entre fontes,
-  fim do gate por `updatedAt` de recurso, reconciliação de contas), `PluggyItemRep`/
-  `PluggyHistorySyncStateRep`/`PluggyHistoryCoverageRep` (escrita condicional atômica),
-  `webhook-drainer.ts` (Position/History independentes, lease de item compartilhado, substitui o
-  `busyItemIds` ad hoc), `infra/worker/load-pluggy-item-in-background.ts` (reescrito — supera o
-  desenho do PR #12), `load-pluggy-history.handler.ts`/rota manual (passa a adquirir o mesmo lease),
-  `CheckPluggyCredentialInteractor`/handler (novo shape com `sources`), quatro migrations novas e uma
-  remoção (`radar_pluggy_history_sync_states` dá lugar a `radar_pluggy_sync_progress`, sem dado real
-  a migrar — tabela vazia em produção/dev hoje).
+- **Código afetado, `radar-pluggy`**: novo `pluggy-source-catalog.ts` (tradução central
+  `ProductType`↔`statusDetail`↔`PluggySource`), `PluggyItemsGateway` (parse de `connector`+produtos
+  do connector e do Item, `updatedAt` obrigatório, correção de chave `investmentTransactions`,
+  adição de `loans`), `PluggyItem` (enum de status), `PluggyClientGateway`/`PluggyConnectorClient`
+  (override de `getApiKey`, recebe `PluggyCallRecorder`), novo `PluggyCallRecorder` (serviço
+  singleton, DI explícito), `PluggyWebhookProvisioner` (instrumentação, hoje descoberta),
+  `PluggyItemCredentialResolver` (instrumentação de chamadas), `RegisterPluggyCredentialImpl`/
+  `Interactor` (captura de connector, instrumentação da validação), `PluggyWebhookEvent`
+  (categorização de evento além de `isApplicable`), `SyncPluggyPositionInteractor`/`Impl`
+  (`PARTIAL_SUCCESS` por fonte, gate por `itemProducts`, reconciliação de fotografia, escrita
+  atômica), `LoadPluggyHistoryInteractor`/`Impl` (portão por fonte, dependência entre fontes, fim do
+  gate por `updatedAt` de recurso, reconciliação de contas), `PluggyItemRep`/
+  `PluggyHistorySyncStateRep`/`PluggyHistoryCoverageRep` (escrita condicional atômica), novo
+  `PluggyItemIngestionLeaseRep` (lease com fencing token e renovação), `webhook-drainer.ts`
+  (Position/History independentes, `trigger` explícito por parâmetro, lease de item compartilhado,
+  substitui o `busyItemIds` ad hoc, categoriza eventos além de `FULL_INGESTION`), novo
+  `infra/worker/pluggy-item-ingestion.ts` (substitui o desenho do PR #12),
+  `load-pluggy-history.handler.ts`/rota manual (adquire o mesmo lease, contexto único cobrindo
+  History síncrono e Position em background), `CheckPluggyCredentialInteractor`/handler (novo shape
+  com `sources` distinguindo `supportedByConnector`/`enabledForItem`), `PluggyPersonItemResolver`
+  (exclui item inativo), sete migrations novas e uma remoção (`radar_pluggy_history_sync_states` dá
+  lugar a `radar_pluggy_sync_progress`, sem dado real a migrar — tabela vazia em produção/dev hoje).
 - **Contrato HTTP**: `GET /credentials/status` ganha o campo `items[]`, aditivo — `hasCredential`
   mantém shape e posição, o consumidor atual continua funcionando sem alteração. Permite rollout
   backend-first, sem deploy coordenado obrigatório com o front. `POST /credentials`, `GET /portfolio`,

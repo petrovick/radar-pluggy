@@ -82,3 +82,40 @@ nunca tem sua marca d'água avançada nesta execução, mesmo que `statusDetail`
   `isUpdated` diferente de `true`, com `statusDetail.<fonte>.lastUpdatedAt` apontando para uma
   coleta anterior
 - **THEN** a marca d'água daquela fonte não é gravada nesta execução
+
+### Requirement: SUCCESS sem lastUpdatedAt usa Item.updatedAt como versão; PARTIAL_SUCCESS inconsistente recusa nomeado
+`Item.lastUpdatedAt` é nullable mesmo em `SUCCESS` (documentado pela Pluggy e pelo SDK instalado).
+Quando isso ocorre, a versão gravada para toda fonte utilizável é `Item.updatedAt` (não-nullable,
+"data de última modificação do Item") — nunca um valor inventado, e nunca uma recusa permanente. Em
+`PARTIAL_SUCCESS`, uma fonte com `isUpdated === true` mas sem `lastUpdatedAt` contradiz o contrato
+documentado (que garante `lastUpdatedAt` presente quando coletado) — este caso MUST recusar
+nomeadamente e não avançar a marca d'água dessa fonte, nunca usar `Item.updatedAt` como substituto
+(o fallback de `Item.updatedAt` só se aplica ao caso `SUCCESS`, nunca a uma fonte individual de
+`PARTIAL_SUCCESS`).
+
+#### Scenario: SUCCESS sem lastUpdatedAt grava a versão a partir de updatedAt
+- **WHEN** uma execução termina com `executionStatus === 'SUCCESS'` e `Item.lastUpdatedAt` é `null`
+- **THEN** a marca d'água de cada fonte processada com sucesso é gravada com `Item.updatedAt`
+
+#### Scenario: PARTIAL_SUCCESS com isUpdated true e lastUpdatedAt ausente recusa nomeado
+- **WHEN** uma execução termina com `executionStatus === 'PARTIAL_SUCCESS'`, uma fonte tem
+  `isUpdated === true` mas `statusDetail.<fonte>.lastUpdatedAt` ausente
+- **THEN** a marca d'água dessa fonte não avança, e um erro nomeado é registrado — nunca um valor de
+  `Item.updatedAt` ou `Item.lastUpdatedAt` é usado como substituto
+
+### Requirement: Fonte não habilitada para o Item nunca é elegível, independente da marca d'água
+Uma fonte que o connector suporta mas que este Item específico não tem habilitada
+(`enabledForItem === false`, `pluggy-connection-observability`) nunca é elegível para processamento
+por nenhum consumidor — mesmo que a marca d'água daquela combinação esteja ausente (o que, sem esta
+regra, seria "sempre elegível"). Quando `enabledForItem` for `UNKNOWN`, a fonte também não é tratada
+como elegível — a incerteza nunca vira elegibilidade por omissão.
+
+#### Scenario: Fonte suportada pelo connector mas não habilitada para o Item nunca é chamada
+- **WHEN** um Item tem `INVESTMENTS` como `enabledForItem: false` (o connector suporta, mas este Item
+  não pediu), independente do estado de qualquer marca d'água
+- **THEN** nenhum consumidor chama `GET /investments` para esse Item, e nenhuma marca d'água de
+  `INVESTMENTS` é gravada
+
+#### Scenario: Habilitação desconhecida não vira elegibilidade por omissão
+- **WHEN** `enabledForItem` de uma fonte está `UNKNOWN` para um Item
+- **THEN** essa fonte não é tratada como elegível para processamento, mesmo sem marca d'água prévia

@@ -18,30 +18,50 @@ credencial continua recebendo ausência de credencial, sem lista de itens.
 - **WHEN** uma pessoa não tem nenhuma credencial cadastrada
 - **THEN** a consulta de status indica ausência de credencial, sem devolver nenhum item
 
-### Requirement: Cada item devolve o estado por fonte suportada pelo connector
-Além do `connectionStatus` agregado do item, a consulta de status MUST devolver, para cada fonte que
-o connector daquele item suporta (`pluggy-item`), se ela está atualizada (`isUpdated`) e o
-`lastUpdatedAt` correspondente — na mesma granularidade que `pluggy-sync-progress` e
-`pluggy-connection-observability` já rastreiam. Uma fonte não suportada pelo connector aparece
-marcada como não suportada, sem `isUpdated`/`lastUpdatedAt`. Em `executionStatus === 'SUCCESS'`
-(`statusDetail` nulo), toda fonte suportada aparece `isUpdated: true` com o `lastUpdatedAt` do Item —
-a tradução não exige `statusDetail` para responder isso.
+#### Scenario: Item removido pela Pluggy aparece desconectado, e some do portfolio corrente
+- **WHEN** um item que tinha posições sincronizadas recebe uma notificação `item/deleted`
+- **THEN** a consulta de status passa a mostrar esse item com `connectionStatus: DISCONNECTED`, e
+  `GET /portfolio`/`GET /accounts` deixam de incluir a fotografia daquele item — o histórico
+  (snapshot/raw) permanece preservado
+
+### Requirement: Cada item devolve o estado por fonte, distinguindo capability do connector de habilitação do Item
+Além do `connectionStatus` agregado do item, a consulta de status MUST devolver, para cada fonte do
+vocabulário fechado (`pluggy-sync-progress`), três informações distintas: `supportedByConnector` (a
+instituição suporta essa fonte, `pluggy-item`), `enabledForItem` (este Item específico pediu/coleta
+essa fonte — `true`, `false`, ou omitido quando o estado observado não souber, `UNKNOWN`) e, só
+quando `enabledForItem === true`, `isUpdated`/`lastUpdatedAt`. Uma fonte com `enabledForItem`
+diferente de `true` nunca aparece com `isUpdated: true`, e nenhuma dessas fontes é tratada como
+elegível por nenhum pipeline. Em `executionStatus === 'SUCCESS'` (`statusDetail` nulo), toda fonte
+com `enabledForItem === true` aparece `isUpdated: true` com o `lastUpdatedAt` do Item — a tradução
+não exige `statusDetail` para responder isso.
 
 #### Scenario: Item parcial não contamina fonte saudável com o alerta de outra
 - **WHEN** um item está em `PARTIAL_SUCCESS`, com `accounts` não coletado nesta execução e
-  `investments` coletado
+  `investments` coletado, ambas habilitadas para o item
 - **THEN** a consulta de status mostra `accounts` como não atualizado e `investments` como
   atualizado, para o mesmo item
 
+#### Scenario: Fonte suportada pelo connector mas não habilitada para este Item nunca aparece elegível
+- **WHEN** o connector de um item suporta `investments`, mas este Item específico foi criado só com
+  `accounts`/`transactions` habilitados
+- **THEN** a consulta de status mostra `investments` com `supportedByConnector: true` e
+  `enabledForItem: false`, sem `isUpdated: true` em nenhuma circunstância
+
 #### Scenario: Fonte não suportada pelo connector aparece marcada como tal
 - **WHEN** o connector de um item não suporta um produto (por exemplo, `loans`)
-- **THEN** a consulta de status marca essa fonte como não suportada, sem `isUpdated` nem
-  `lastUpdatedAt`
+- **THEN** a consulta de status marca essa fonte com `supportedByConnector: false`, sem
+  `enabledForItem`/`isUpdated`/`lastUpdatedAt`
+
+#### Scenario: Habilitação do Item desconhecida nunca vira "habilitado" por herança do connector
+- **WHEN** o estado observado do Item não conseguiu determinar `itemProducts` (`UNKNOWN`,
+  `pluggy-connection-observability`)
+- **THEN** a consulta de status devolve `enabledForItem` omitido para as fontes daquele item, mesmo
+  que o connector suporte essas fontes — nunca inferido de `supportedByConnector`
 
 #### Scenario: SUCCESS não exige statusDetail para responder o estado por fonte
 - **WHEN** um item está em `executionStatus === 'SUCCESS'`
-- **THEN** cada fonte suportada pelo connector aparece atualizada, com `lastUpdatedAt` igual ao do
-  Item, sem depender de `statusDetail` (que é nulo neste caso)
+- **THEN** cada fonte com `enabledForItem === true` aparece atualizada, com `lastUpdatedAt` igual ao
+  do Item, sem depender de `statusDetail` (que é nulo neste caso)
 
 ### Requirement: Validação de credencial nova é registrada no histórico de chamadas antes do vínculo existir
 A chamada que valida se uma credencial nova consegue alcançar o item informado — feita antes de

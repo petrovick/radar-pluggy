@@ -61,6 +61,17 @@ intocada.
 
 ## ADDED Requirements
 
+### Requirement: Item inativo (removido pela Pluggy) não contribui fotografia para o portfolio corrente
+Um item cujo vínculo credencial↔item está marcado inativo (`item/deleted`,
+`pluggy-connection-observability`) MUST deixar de ser incluído na leitura de posições de uma pessoa
+(`GET /portfolio`) — mesmo que a fotografia local ainda tenha registros daquele item. Snapshot/raw
+histórico permanecem preservados; só a leitura da fotografia corrente exclui o item.
+
+#### Scenario: Portfolio não mostra mais posição de item removido
+- **WHEN** um item com posições sincronizadas é marcado inativo por uma notificação `item/deleted`
+- **THEN** `GET /portfolio` para a pessoa dona daquele item deixa de incluir as posições desse item,
+  mesmo que a fotografia local ainda tenha os registros
+
 ### Requirement: Marca d'água de ingestão completa avança só em sucesso pleno
 A marca d'água que representa "última ingestão completa e bem-sucedida do item" avança se e somente
 se `executionStatus` for `SUCCESS`. Ela nunca avança quando `executionStatus` é `PARTIAL_SUCCESS`,

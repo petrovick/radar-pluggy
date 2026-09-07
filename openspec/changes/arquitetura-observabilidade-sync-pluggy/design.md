@@ -450,29 +450,63 @@ e rápida (mesmo idioma de claim atômico de `PluggyWebhookEventRep`), preserva 
 dessa rota e ainda garante exclusão mútua real.
 
 Nova tabela `radar_pluggy_item_ingestion_leases` (`item_id` único, `trigger`, `lease_until`,
-`acquired_at`). Repositório `PluggyItemIngestionLeaseRep`:
-- `tryAcquire(itemId, trigger, ttlMs)`: `findOrCreate` uma linha "livre" (`lease_until = epoch`) se
-  não existir, depois `UPDATE ... SET lease_until = :new, trigger = :trigger, acquired_at = :now
-  WHERE item_id = :id AND lease_until <= :now` — mesmo idioma de `claimNextPending`/`markSucceeded`
-  (`UPDATE` com `WHERE` que decide o vencedor no banco, linhas afetadas prova posse). Devolve o
-  `acquired_at` como token, ou `undefined` se não conseguiu.
-- `release(itemId, token)`: `UPDATE ... SET lease_until = :now WHERE item_id = :id AND acquired_at =
-  :token` — só quem detém o token consegue liberar; um lease vencido e reivindicado por outro nunca é
-  liberado pelo dono antigo por engano.
+`fencing_token` BIGINT, `acquired_at`). **`fencing_token` é a prova de posse, não `acquired_at`**
+(revisão desta rodada — ver "Correção: TTL sem renovação" abaixo): dois `tryAcquire` não podem
+depender da resolução de milissegundo de um timestamp para se distinguir; um contador que só
+incrementa, por item, cada vez que o lease é adquirido, nunca colide e nunca anda para trás.
+Repositório `PluggyItemIngestionLeaseRep`:
+- `tryAcquire(itemId, trigger, ttlMs)`: `findOrCreate` uma linha "livre" (`lease_until = epoch`,
+  `fencing_token = 0`) se não existir, depois `UPDATE ... SET lease_until = :new, trigger = :trigger,
+  fencing_token = fencing_token + 1, acquired_at = :now WHERE item_id = :id AND lease_until <= :now`
+  — mesmo idioma de `claimNextPending`/`markSucceeded` (`UPDATE` com `WHERE` que decide o vencedor no
+  banco, linhas afetadas prova posse). Devolve o `fencing_token` **pós-incremento** como token, ou
+  `undefined` se não conseguiu.
+- `renew(itemId, fencingToken, ttlMs)`: `UPDATE ... SET lease_until = :new WHERE item_id = :id AND
+  fencing_token = :fencingToken` — devolve `true`/`false` (linhas afetadas). Chamado em heartbeat
+  (ver abaixo), nunca muda `fencing_token`.
+- `release(itemId, fencingToken)`: `UPDATE ... SET lease_until = :now WHERE item_id = :id AND
+  fencing_token = :fencingToken` — só quem detém o `fencing_token` atual consegue liberar; um lease
+  vencido e reivindicado por outro (com `fencing_token` maior) nunca é liberado pelo dono antigo por
+  engano, porque o `WHERE` não casa mais.
 
 `webhook-drainer.ts` passa a adquirir esse lease (com `trigger = 'WEBHOOK'`) para o `item_id` do
 evento **antes** de marcá-lo `PROCESSING` — se a aquisição falhar (outro trigger já está ingerindo
 aquele item), o evento permanece `PENDING` e a drenagem tenta o próximo evento de item diferente,
 sem consumir uma tentativa. Isso **substitui** o subquery `busyItemIds` que hoje faz esse papel só
 entre eventos de webhook — o lease compartilhado é a única fonte de verdade de exclusão, entre
-qualquer trigger. `load-pluggy-item-in-background.ts` (D11) e o handler da rota manual adquirem o
+qualquer trigger. `pluggy-item-ingestion.ts` (D11) e o handler da rota manual (D30) adquirem o
 mesmo lease antes de chamar os dois interactors; falha de aquisição:
-- pré-carga: loga e não roda — o webhook, quando chegar, ou o próprio lease liberado processa depois;
-- rota manual: responde `409`-equivalente (`{errorType: 'PLUGGY_ITEM_INGESTION_IN_PROGRESS'}`) —
-  novo, mas mesma forma `{errorType, extras}` já usada em toda a API.
+- pré-carga/webhook/boot: loga e não roda — outro trigger já está cobrindo aquele item, e o próprio
+  evento (se vier de webhook) permanece `PENDING` para a próxima drenagem;
+- rota manual: responde recusando nomeadamente (`{errorType: 'PLUGGY_ITEM_INGESTION_IN_PROGRESS'}`)
+  — novo, mas mesma forma `{errorType, extras}` já usada em toda a API.
 
 Release sempre acontece (sucesso ou falha) antes de a unidade de trabalho terminar — nunca some por
 exceção não tratada (`finally` ou equivalente).
+
+**Correção desta rodada: TTL sem renovação não sustenta a garantia prometida.** Um `lease_until` fixo
+sem heartbeat quebra sob carga histórica longa: `worker A` adquire, a varredura de histórico demora
+mais que o TTL, o lease expira, `worker B` adquire um lease novo para o mesmo item enquanto `worker A`
+ainda está processando — duas ingestões simultâneas, exatamente o que a capability promete impedir.
+Correção: quem detém o lease **renova periodicamente** enquanto o trabalho estiver em andamento — um
+heartbeat (`setInterval`, período = `ttlMs / 3`) chamando `renew(itemId, fencingToken, ttlMs)`,
+iniciado logo após `tryAcquire` e **sempre** parado (`clearInterval`) num `finally` antes de liberar o
+lease, sucesso ou falha.
+
+**Até onde vai a garantia formal**: com heartbeat, a janela de "TTL expira enquanto o dono original
+ainda trabalha" fecha para o caso comum — um único processo Node.js executando a ingestão: heartbeat e
+qualquer escrita de negócio competem pelo mesmo event loop single-threaded, então se o heartbeat para
+de rodar (processo travado/morto), nenhuma escrita concorrente desse mesmo processo pode estar
+acontecendo em paralelo — não há paralelismo real dentro de um processo Node para essas duas coisas
+divergirem. A garantia é mais fraca só num cenário específico: duas instâncias/processos diferentes
+(por exemplo, API escalada horizontalmente), onde uma pausa de GC longa poderia, em teoria, atrasar o
+heartbeat e uma escrita pendente pelo mesmo tanto — reduzido pelo heartbeat, mas não formalmente
+impossível sem propagar o `fencing_token` para dentro de cada escrita de `pluggy-sync-progress`/
+reconciliação (o que exigiria acoplar os dois interactors ao lease, custo maior que o problema real
+que motivou o pedido). Por isso: **o lease evita trabalho duplicado e chamadas desnecessárias — quem
+garante que o dado nunca fica corrompido mesmo numa sobreposição residual é a escrita atômica de D17**,
+que não depende do lease para estar correta. A promessa da capability é ajustada para refletir
+exatamente isso (ver spec `pluggy-ingestion-coordination`).
 
 **Alternativa descartada**: opção 1 (fila de ingestão única) — descartada porque exigiria mudar o
 contrato síncrono da rota manual, mudança que ninguém pediu; documentada aqui porque foi cogitada e
@@ -480,6 +514,15 @@ rejeitada explicitamente, conforme pedido.
 **Alternativa descartada**: usar `radar_pluggy_calls` como lock — nunca, é auditoria (não-goal já
 fixado).
 **Alternativa descartada**: Redis — não-goal já fixado; MySQL já resolve com o mesmo idioma existente.
+**Alternativa descartada**: `acquired_at` (timestamp) como token de posse (rodada anterior) —
+descartada porque duas aquisições podem cair no mesmo milissegundo (resolução do `Date` em Node);
+`fencing_token` monotônico nunca colide.
+**Alternativa descartada**: propagar `fencing_token` para dentro de cada escrita de
+`pluggy-sync-progress`/`radar_pluggy_item_observations`/reconciliação (fencing completo, no sentido
+clássico de Kleppmann) — cogitada e adiada: fecharia o gap residual entre processos diferentes, mas
+acopla dois interactors independentes ao mecanismo de lease só para um cenário que já é mitigado pelo
+heartbeat e coberto, para integridade de dado, por D17; revisitar se o serviço passar a escalar
+horizontalmente de um jeito que torne esse gap residual observável na prática.
 
 ### D17 — Toda marca d'água/observação é escrita com condição atômica no banco, nunca "ler, validar em memória, escrever"
 `PluggyItemRep.save`, `PluggyHistorySyncStateRep.save` e `PluggyHistoryCoverageRep.save` (todos já em
@@ -610,19 +653,52 @@ SYSTEM_INTERNAL                       (fallback — nunca deveria aparecer; exis
 Os quatro marcados "dispara ingestão" são os que adquirem o lease de D16; os demais só geram linha em
 `radar_pluggy_calls`.
 
-### D24 — Schema completo de `radar_pluggy_calls`
+**Correção desta rodada: `BOOT_RECOVERY` não pode nascer dentro de `webhook-drainer.ts`.** O
+`index.ts` do boot chama o mesmo `drainPluggyWebhookEvents` que o webhook HTTP chama — se o
+`trigger` for decidido *dentro* do drenador (um `runWithCallContext({trigger: 'WEBHOOK'}, ...)`
+fixo no início da função, como uma versão anterior desta proposta sugeria), o contexto do boot seria
+sobrescrito pelo contexto interno, e toda chamada de recuperação no boot apareceria classificada como
+`WEBHOOK` em `radar_pluggy_calls` — `BOOT_RECOVERY` nunca apareceria de fato. `drainPluggyWebhookEvents`
+passa a receber `trigger` como **parâmetro explícito** (`drainPluggyWebhookEvents(container, trigger)`),
+nunca um valor fixo internamente: o chamador HTTP passa `'WEBHOOK'`, o boot passa `'BOOT_RECOVERY'`.
+O drenador usa esse `trigger` recebido para toda chamada Pluggy daquela passada — nunca cria um
+`trigger` próprio que sobreponha o do chamador.
+
+**Alternativa descartada**: `runWithCallContext({trigger: 'WEBHOOK'})` fixo dentro do drenador —
+descartada porque é exatamente a causa da regressão descrita acima.
+
+### D24 — Schema completo de `radar_pluggy_calls`, com ordinal de paginação e taxonomia de falha
 Colunas: `id`, `item_id` (nullable), `connector_id` (nullable), `operation` (enum fechado, ver
 abaixo), `http_method` (nullable — só para chamadas que são de fato HTTP; o SDK abstrai isso, mas o
 gateway sabe o verbo de cada operação), `route_template` (nullable, ex.: `/items/{id}`, nunca a URL
 com o `id` real interpolado), `call_scope`, `trigger`, `resource_type` (nullable), `resource_id`
-(nullable), `request_correlation_id`, `webhook_event_id` (nullable), `started_at`, `completed_at`,
-`duration_ms`, `http_status` (nullable), `outcome` (enum: `SUCCESS`, `FAILURE`), `error_code`
-(nullable), `created_at`.
+(nullable), `request_correlation_id`, `webhook_event_id` (nullable), `page_ordinal` (nullable —
+ver abaixo), `page_size` (nullable), `started_at`, `completed_at`, `duration_ms`, `http_status`
+(nullable), `outcome` (enum: `SUCCEEDED`, `FAILED`), `failure_kind` (nullable — só preenchido quando
+`outcome = FAILED`, enum: `CLIENT_ERROR`, `UPSTREAM_ERROR`, `TIMEOUT`, `UNAVAILABLE`, `UNKNOWN`),
+`error_code` (nullable, o `errorType`/código nomeado, complementar a `failure_kind` — nunca
+substituto), `created_at`.
+
+**`page_ordinal`/`page_size` fecham a lacuna de rodada anterior**: a spec já exigia "paginação
+reconstruível por `request_correlation_id` + ordinal seguro", mas a migration não tinha coluna para
+esse ordinal. Para paginação numérica (`GET /investments?page=N`), `page_ordinal = N`, direto do
+argumento já usado pelo gateway. Para paginação por cursor (`fetchTransactionsCursor`, sem número de
+página nos argumentos do SDK), `page_ordinal` é um contador local — `1, 2, 3...` — mantido no
+`CallContext` (D2), particionado por `operation + resource_id` (cada recurso escaneado tem sua
+própria sequência, reiniciada a cada novo `runWithCallContext`); nunca o cursor opaco da Pluggy em
+si.
+
+**`outcome`/`failure_kind` restaura a taxonomia útil para IA/observabilidade** que uma revisão
+anterior havia reduzido a um binário simples: `outcome` continua fechado e simples
+(`SUCCEEDED`/`FAILED`), mas toda falha carrega também `failure_kind`, para que consultas de
+frequência/anomalia não precisem interpretar dezenas de `error_code` distintos para saber se o
+problema foi timeout, upstream indisponível, ou erro do próprio cliente. `pluggySdkError` (já
+existente em `pluggy-client.gateway.ts`, usado por todos os gateways de borda para classificar
+timeout/unavailable/upstream/4xx) já produz essa classificação — `instrumentPluggyClient` só precisa
+reaproveitá-la, não reinventar.
 
 **Nunca persistido**: corpo de requisição/resposta, saldo, valor monetário, descrição de transação,
-`clientSecret`, `apiKey`, token, cursor opaco de paginação. Paginação é reconstruível pelo
-`request_correlation_id` e, se necessário, um ordinal seguro (número de página), nunca um cursor
-opaco da Pluggy.
+`clientSecret`, `apiKey`, token, cursor opaco de paginação.
 
 `operation` (enum fechado, cobre no mínimo): `AUTH`, `FETCH_ITEM`, `FETCH_INVESTMENTS`,
 `FETCH_INVESTMENT_TRANSACTIONS`, `FETCH_LOANS`, `FETCH_ACCOUNTS`, `FETCH_ACCOUNT_TRANSACTIONS`,
@@ -645,6 +721,265 @@ depois de a chamada real terminar, nunca depois de o `INSERT` terminar. Falha na
 **Alternativa descartada**: `await` na gravação antes de devolver o resultado — descartada porque um
 banco lento atrasaria toda chamada de negócio à Pluggy, contra o requisito explícito de "nunca
 bloqueia".
+
+### D26 — `Connector.products` (capability da instituição) e produtos habilitados do Item são conceitos diferentes, nunca um substituto do outro
+`Connector.products: ProductType[]` (D19) é o que a instituição **suporta**. Mas um Item pode ser
+criado/atualizado pedindo só um subconjunto (`POST /items {"products": ["ACCOUNTS", "TRANSACTIONS"]}`)
+— confirmado na documentação oficial da Pluggy (`GET /items/{id}` devolve a lista de produtos
+habilitados daquele Item) e no OpenAPI atual (campo `products` no schema de resposta de
+`GET /items/{id}`, com o mesmo vocabulário de `ProductType`). `Connector.products` incluir
+`INVESTMENTS` não significa que este Item específico pediu/coleta `INVESTMENTS`.
+
+Dois conceitos, nunca fundidos:
+- `connectorProducts` — capability da instituição, já capturado no vínculo (D19), muda raramente.
+- `itemProducts` — produtos habilitados **deste Item**, pode mudar num `PATCH /items` futuro; por
+  isso pertence ao **estado observado atual** (`radar_pluggy_item_observations.item_products`), não
+  só ao cadastro.
+
+**O SDK instalado não tipa `products` em `Item`** (`item.d.ts` não declara o campo, embora a
+documentação e o OpenAPI atual o confirmem no payload real) — mais uma divergência SDK/documentação
+como as três já corrigidas por D7. `PluggyItemsGateway.parseItem` já trata todo o payload como
+`unknown` e valida campo a campo (`data = (await client.fetchItem(itemId)) as unknown as
+PluggyItemResponse`, ver `pluggy-items.gateway.ts`) — `products` é parseado do **payload bruto**,
+pelo mesmo padrão defensivo dos demais campos, nunca descartado só porque o `.d.ts` ficou para trás.
+
+Se `data.products` estiver ausente ou não for um array de strings reconhecíveis, `itemProducts` fica
+`undefined` — **estado `UNKNOWN`, nunca `[]`**. Um array vazio (`itemProducts: []`) e "não sabemos"
+(`itemProducts: undefined`) são sinais diferentes: o primeiro afirma "nenhum produto habilitado", o
+segundo afirma "não sabemos o que está habilitado". Essa distinção importa porque uma leitura tratada
+como autoritativa (D21) sobre uma fonte que na verdade nunca foi solicitada apagaria dado local sem
+necessidade — por isso `UNKNOWN` nunca vira "trate como se `Connector.products` decidisse":
+`enabledForItem` só é `true`/`false` quando `itemProducts` foi de fato lido; quando `UNKNOWN`, a
+fonte não é tratada como elegível nem como reconciliável, e a tradução de `/credentials/status`
+expõe isso explicitamente (nunca infere de `connectorProducts`).
+
+`/credentials/status.items[].sources.<fonte>` passa a expor `supportedByConnector`
+(de `connectorProducts`) e `enabledForItem` (de `itemProducts`, podendo ser `true`/`false`/omitido
+quando `UNKNOWN`) como campos distintos — `isUpdated`/`lastUpdatedAt` só aparecem quando
+`enabledForItem === true`; uma fonte com `enabledForItem === false` nunca aparece com `isUpdated:
+true`, e nenhum pipeline (`pluggy-sync-progress`, reconciliação D21) trata essa fonte como elegível.
+
+**Alternativa descartada**: usar só `Connector.products` para decidir elegibilidade de fonte (o
+desenho de todas as rodadas anteriores) — descartada por confundir capability da instituição com o
+que o Item realmente pediu; o caso concreto que isso quebraria é um Item criado só com
+`ACCOUNTS`/`TRANSACTIONS` cujo connector também suporta `INVESTMENTS` — o desenho anterior trataria
+`INVESTMENTS` como elegível e uma leitura vazia (porque nunca foi solicitada) apagaria posição que
+nunca existiu para apagar, ou pior, mascararia uma fonte genuinamente nunca coletada como "vazio
+real".
+**Alternativa descartada**: descartar `products` por não estar tipado no `.d.ts` do SDK instalado —
+descartada pela mesma razão de D7: o `.d.ts` é promessa de compilação, não garantia de runtime; o
+payload real e o OpenAPI atual confirmam o campo.
+
+### D27 — `Item.lastUpdatedAt` é nullable mesmo em `SUCCESS`; fallback é `Item.updatedAt`, nunca um watermark inventado
+O SDK declara `lastUpdatedAt: Date | null`, e a documentação oficial da Pluggy traz um exemplo
+real com `{"executionStatus": "SUCCESS", "lastUpdatedAt": null, "statusDetail": null}` — a premissa
+de rodadas anteriores (de que `SUCCESS` sempre traz `lastUpdatedAt`) é otimista demais.
+`SyncPluggyPositionInteractor.execute` (já em `staging`) hoje recusa nomeando
+(`PLUGGY_ITEM_SUCCESS_WITHOUT_LAST_UPDATED_AT`) quando isso acontece — o que, sob D12, deixaria o
+Item nessa condição permanentemente inelegível para `pluggy-sync-progress` avançar, mesmo com dado
+novo real disponível.
+
+`Item.updatedAt: Date` (não-nullable no SDK, "data de última modificação do Item") é o fallback:
+```
+SUCCESS:
+  versionAt = Item.lastUpdatedAt ?? Item.updatedAt
+```
+`last_completed_version_at`, nesse caminho de fallback, representa "quando o registro do Item mudou
+pela última vez" — uma versão operacional da execução observada, **não necessariamente** "quando os
+dados daquela fonte foram sincronizados" (a semântica que o valor normal, não-fallback, carrega).
+Essa diferença é aceita porque a alternativa (nunca avançar, ou recusar para sempre) é pior: um Item
+preso em `SUCCESS + lastUpdatedAt: null` nunca sairia do estado "sem watermark", e toda releitura
+repetiria o mesmo resultado indefinidamente.
+
+`PluggyItemsGateway.parseItem` passa a parsear `updatedAt` como campo obrigatório (mesmo padrão
+defensivo dos demais — recusa nomeada, `PLUGGY_ITEMS_RESPONSE_INVALID`, se ausente ou malformado,
+já que o SDK o documenta como sempre presente).
+
+Para `PARTIAL_SUCCESS`, o fallback **não se aplica** — cada fonte tem sua própria versão
+(`statusDetail.<fonte>.lastUpdatedAt`), e não faria sentido dar a duas fontes diferentes de uma
+mesma execução parcial o mesmo valor de `Item.updatedAt`. A documentação do SDK garante: "se
+coletado, `isUpdated` será `true` e `lastUpdatedAt` será a data" — ou seja, `isUpdated === true` sem
+`lastUpdatedAt` é uma resposta que contradiz o próprio contrato documentado. Nesse caso:
+```
+PARTIAL_SUCCESS, isUpdated === true, lastUpdatedAt ausente:
+  → não avança a marca d'água dessa fonte
+  → erro nomeado (PLUGGY_ITEM_PRODUCT_UPDATED_WITHOUT_LAST_UPDATED_AT), logado
+  → nunca inventa um valor (nem Item.updatedAt, nem Item.lastUpdatedAt)
+```
+
+**Alternativa descartada**: continuar recusando `SUCCESS + lastUpdatedAt: null` como erro permanente
+— descartada porque deixa o Item preso, sem caminho de saída, para um caso que a própria Pluggy
+documenta como possível.
+**Alternativa descartada**: aplicar o fallback `Item.updatedAt` também a uma fonte de
+`PARTIAL_SUCCESS` sem `lastUpdatedAt` — descartada porque contradiz a semântica por fonte que D12
+estabelece, e porque um contrato documentado sendo violado merece recusa nomeada, não um valor
+inventado que mascara a inconsistência.
+
+### D28 — Eventos de webhook além de `item/created`/`item/updated` atualizam o estado observado; `item/deleted` é terminal
+A inscrição de webhook já pede `event: 'all'` (`WEBHOOK_EVENT_ALL`, `pluggy-webhooks.gateway.ts`) —
+a Pluggy manda todo evento (`item/error`, `item/waiting_user_input`, `item/waiting_user_action`,
+`item/login_succeeded`, `item/deleted`, `connector/status_updated`, entre outros), mas
+`PluggyWebhookEvent.isApplicable()` hoje só reconhece `item/created`/`item/updated` — todo o resto é
+"reconhecido e concluído sem trabalho". Isso deixa `pluggy-connection-observability` mentindo: um
+`item/error` (a Pluggy documenta como "o Item encontrou erro na execução", ex.: virou `LOGIN_ERROR`,
+e a Pluggy **para** o auto-sync daquele Item) nunca atualiza `radar_pluggy_item_observations` — o
+estado observado continua `CONNECTED` indefinidamente, porque nenhum evento seguinte vai disparar uma
+releitura.
+
+Três categorias, fechadas:
+```
+FULL_INGESTION     item/created, item/updated
+                   → adquire lease (D16), roda Position e History (D15)
+
+OBSERVATION_REFRESH  item/error, item/waiting_user_input, item/waiting_user_action,
+                     item/login_succeeded
+                   → PluggyItemStateResolver.read(itemId) (fetchItem + observação + connector,
+                     D9/D18) — não precisa de lease nem roda Position/History: o objetivo é só
+                     refletir o estado atual, e a escrita de observação já é atômica por si (D17)
+
+TERMINAL           item/deleted
+                   → NUNCA chama fetchItem (o recurso não existe mais na Pluggy, um fetch
+                     devolveria 404) — marca radar_pluggy_credential_items.inactive_at = now() para
+                     aquele item; connectionStatus passa a DISCONNECTED (novo valor no vocabulário
+                     fechado de pluggy-connection-observability), decidido diretamente por
+                     inactive_at estar presente, sem depender de nenhuma observação nova
+```
+`connector/status_updated` e webhooks de transação continuam deliberadamente ignorados (decisão já
+existente, agora documentada explicitamente): não mudam o estado observado de nenhum Item
+específico, e nenhuma decisão desta capability depende deles hoje.
+
+Um Item `TERMINAL` deixa de contribuir fotografia para `/portfolio`/`/accounts`/extrato — ver D29.
+Raw/snapshot histórico nunca são apagados; só a fotografia "atual" para de considerar aquele Item.
+
+A Pluggy pode emitir `item/deleted` de forma automática (por exemplo, depreciação de connector) —
+não é um caso hipotético a ignorar.
+
+**Alternativa descartada**: tentar `fetchItem` mesmo em `item/deleted`, para "confirmar" — descartada
+porque o recurso já não existe: a chamada devolveria erro, sem nenhuma informação nova, e geraria uma
+linha de falha em `radar_pluggy_calls` sem propósito.
+**Alternativa descartada**: ignorar `item/error`/os demais eventos de observação, como hoje —
+descartada porque é exatamente a lacuna que motivou este ponto: o titular pode continuar vendo
+`CONNECTED` depois de uma quebra real.
+
+### D29 — Item terminal (`item/deleted`) para de contribuir fotografia atual, sem apagar histórico
+`PluggyPersonItemResolver.itemIdsFor(personId)` é o único ponto que decide quais `itemId`s entram na
+leitura de `/portfolio` (`ReadPluggyPositionInteractor`) e `/accounts` (`ReadPluggyAccountInteractor`)
+— os dois interactors chamam `readItemIdsForPerson` que delega inteiramente a esse resolver. Um
+único ajuste ali (filtrar `radar_pluggy_credential_items.inactive_at IS NULL`) já corrige os dois
+endpoints e o extrato de cartão (que deriva de `accounts`), sem duplicar a regra.
+
+`GET /credentials/status` reflete o mesmo marcador: um item com `inactive_at` presente aparece com
+`connectionStatus: DISCONNECTED`, decidido antes de qualquer tradução `(status, executionStatus)` —
+o estado bruto que a última observação guardou já não importa depois que o Item foi apagado do lado
+da Pluggy.
+
+**Alternativa descartada**: apagar fisicamente o vínculo ou a fotografia quando `item/deleted` chega
+— descartada porque destruiria histórico/auditoria sem necessidade; `inactive_at` preserva tudo e
+resolve o problema (fotografia atual para de considerar o Item) com uma escrita aditiva.
+
+### D30 — Rota manual: um `runWithCallContext` só, cobrindo a chamada síncrona de History e a continuação assíncrona de Position
+`POST /items/:itemId/history/load` (D16) precisa que `trigger=MANUAL_HISTORY_LOAD`,
+`requestCorrelationId` e o `fencing_token` do lease adquirido atravessem corretamente a fronteira
+entre "History síncrono, resposta HTTP já enviada" e "Position em background depois". A resolução:
+todo o corpo do handler — a chamada síncrona a `LoadPluggyHistoryInteractor` **e** o disparo de
+`syncPluggyPositionInBackground` — roda dentro de uma única chamada a `runWithCallContext(ctx, async
+() => {...})`. Isso funciona porque `AsyncLocalStorage` propaga pela cadeia de causalidade
+assíncrona, não pelo "a função externa já retornou": contanto que o disparo de Position seja feito
+*de forma síncrona*, como parte da mesma função `async` passada a `runWithCallContext` (mesmo que a
+promise de Position não seja aguardada ali), a continuação de Position — inclusive seu próprio
+`.then()`/`.catch()` — ainda roda dentro do mesmo contexto. É o mesmo mecanismo que já sustenta o
+padrão fire-and-forget do drenador de webhook e da pré-carga (D2) — aplicado aqui à rota manual, que
+hoje não o usa.
+
+Fluxo do handler:
+```
+runWithCallContext({trigger: 'MANUAL_HISTORY_LOAD', requestCorrelationId}, async () => {
+  fencingToken = tryAcquire(itemId, 'MANUAL_HISTORY_LOAD', ttl)
+  se não conseguiu: responde recusa nomeada, retorna
+  inicia heartbeat (renew a cada ttl/3)
+  history = await LoadPluggyHistoryInteractor.execute(...)
+  responde HTTP com history (lease e heartbeat continuam vivos)
+  syncPluggyPositionInBackground(...)      // síncrono aqui dentro — herda o contexto
+    .then/.catch(...)
+    .finally(() => { para heartbeat; release(itemId, fencingToken) })
+})
+```
+O `fencingToken` é uma variável capturada por closure, compartilhada entre a chamada síncrona de
+History e a continuação de Position — não precisa passar por `AsyncLocalStorage`, só o contexto de
+observabilidade (`trigger`/`requestCorrelationId`) precisa.
+
+**Alternativa descartada**: liberar o lease logo após History responder, antes de Position rodar —
+descartada porque reabriria a janela de corrida que D16 fecha: um webhook para o mesmo item poderia
+começar a processar enquanto Position ainda está em voo.
+
+### D31 — `PluggyCallRecorder`: serviço singleton explícito, nunca DB dentro de `AsyncLocalStorage`
+`AsyncLocalStorage` (D2) carrega só dados contextuais (`trigger`, `webhookEventId`,
+`requestCorrelationId`, contador de página) — nunca um repositório, model ou conexão de banco: isso
+seria service locator implícito, e quebraria o registro explícito por DI que o resto do código já
+segue. A peça que falta é: quem, concretamente, grava a linha em `radar_pluggy_calls` a partir do
+override de `getApiKey` (D1) e do Proxy de `instrumentPluggyClient` (D3), já que
+`PluggyConnectorClient` é singleton cacheado fora de qualquer escopo Awilix e não tem acesso natural
+a um repositório `.scoped()`.
+
+`PluggyCallRecorder` é um serviço **singleton** (registrado no container raiz, resolvido uma vez,
+como `PluggyClientGateway` já é):
+```ts
+interface PluggyCallRecorder {
+  record(event: PluggyCallEvent): void   // nunca async do ponto de vista de quem chama — dispara e
+                                          // não bloqueia (D25); grava sem a transação do chamador
+}
+```
+Recebe o model/conexão do banco pelo mesmo padrão de construtor já usado em todo repositório
+(`constructor(params: AppContainer) { this.model = params.db.models.pluggyCall; this.logger =
+params.logger }`), mas nunca lê `getTransaction()` do escopo de quem chamou — sempre grava fora de
+qualquer transação de negócio (autocommit), exatamente como D25 exige.
+
+Wiring:
+- `PluggyClientGateway` (já singleton) recebe `PluggyCallRecorder` via DI e o repassa para cada
+  `PluggyConnectorClient` que constrói (parâmetro de construtor ou setter) — é isso que o override de
+  `getApiKey` (D1) chama diretamente para gravar `AUTH`.
+- `instrumentPluggyClient(client, {itemId, connectorId}, recorder)` passa a receber `recorder` como
+  parâmetro explícito — os três pontos de chamada (D3: `PluggyItemCredentialResolver.clientFor`,
+  `RegisterPluggyCredentialImpl.validateItemAccess`, `PluggyWebhookProvisioner.provisionFor`, D22)
+  resolvem `pluggyCallRecorder` do próprio container Awilix (um singleton é resolvível de qualquer
+  escopo) e o passam.
+- O Proxy de `instrumentPluggyClient` e o override de `getApiKey` leem `currentCallContext()` (D2)
+  **só** para os campos contextuais (`trigger`, `webhookEventId`, `requestCorrelationId`, ordinal de
+  página) — nunca para obter o recorder em si.
+
+**Alternativa descartada**: guardar o recorder ou o repositório dentro de `AsyncLocalStorage` —
+descartada porque mistura dado contextual com dependência de infraestrutura, e reintroduz service
+locator implícito, que o resto da arquitetura deste serviço evita deliberadamente.
+
+### D32 — Tabela única de tradução `ProductType ↔ chave de statusDetail ↔ PluggySource`
+Três vocabulários describem os mesmos cinco recursos, e não coincidem: `ProductType` do SDK
+(`ACCOUNTS`, `TRANSACTIONS`, `INVESTMENTS`, `INVESTMENTS_TRANSACTIONS` — com "S" —, `LOANS`), a chave
+de `Item.statusDetail` (`accounts`, `transactions`, `investments`, `investmentTransactions` — sem
+"S" em Investments —, `loans`), e o vocabulário de domínio deste change (`ACCOUNTS`,
+`ACCOUNT_TRANSACTIONS`, `INVESTMENTS`, `INVESTMENT_TRANSACTIONS`, `LOANS`). Espalhar essa tradução em
+vários arquivos (como as rodadas anteriores já começaram a fazer, implicitamente, em
+`PluggyItemsGateway`, no futuro `PluggySyncProgressRep`, e na tradução de `/credentials/status`) é
+como o bug de D7 (`investmentsTransactions` vs `investmentTransactions`) aconteceu da primeira vez.
+
+Módulo único, `adapters/gateways/pluggy-source-catalog.ts`, exportando a tabela completa e funções
+derivadas (`sourceFromProductType`, `sourceFromStatusDetailKey`, `statusDetailKeyFromSource`,
+`productTypeFromSource`) — toda tradução entre os três vocabulários passa por aqui, com teste de
+tabela cobrindo as cinco linhas nos dois sentidos. Usado por: parsing de `itemProducts`/
+`connectorProducts` (D26), parsing de `statusDetail` (D7, já existente — migra para usar o módulo),
+`pluggy-sync-progress` (D4/D12), tradução de `/credentials/status` (D10/D20).
+
+**Alternativa descartada**: manter a tradução implícita em cada arquivo que precisa dela (o estado
+atual) — descartada porque já causou uma divergência real (D7) e continuaria causando outras à medida
+que mais pontos do código precisarem cruzar os três vocabulários.
+
+### D33 — Schema completo de `radar_pluggy_item_observations`
+D20 depende desta tabela para responder `/credentials/status` **sem** chamar `fetchItem` de novo —
+isso só é possível se o schema guardar tudo que a tradução precisa, não só o token de ordenação.
+Colunas: `id`, `item_id` (único), `status`, `execution_status`, `status_detail` (JSON, nullable —
+espelha `Item.statusDetail`, já `null` em `SUCCESS`, D12), `item_products` (JSON, nullable — D26,
+`null` quando `UNKNOWN`), `last_updated_at` (nullable, D27), `next_auto_sync_at` (nullable),
+`connector_id` (nullable, denormalizado — D8), `observation_started_at` (D9.1), `created_at`,
+`updated_at`.
 
 ## Risks / Trade-offs
 
@@ -680,33 +1015,58 @@ bloqueia".
   momentânea do lado da instituição) → **[Mitigação]** a reconciliação só roda quando a fonte é
   `isUsable` (coleta real bem-sucedida, D6) — nunca em execução recusada/parcial não coletada; o
   raw/snapshot preserva o histórico para qualquer auditoria posterior.
+- **[Risco]** O lease de ingestão (D16), mesmo com fencing token e heartbeat, não fecha 100% a
+  janela entre processos diferentes numa pausa de GC longa → **[Mitigação]** aceito e documentado
+  explicitamente em D16: o lease evita trabalho duplicado, mas a integridade do dado nunca depende
+  só dele — D17 (escrita atômica condicional) protege `radar_pluggy_sync_progress`/
+  `radar_pluggy_item_observations` mesmo numa sobreposição residual.
+- **[Risco]** Distinguir `connectorProducts`/`itemProducts` (D26) com um SDK que não tipa `products`
+  em `Item` aumenta a superfície de parsing defensivo → **[Mitigação]** mesmo padrão já usado para
+  todo o resto do payload (`unknown` + validação campo a campo, D7); ausência/formato inesperado vira
+  `UNKNOWN` nomeado, nunca inferência silenciosa a partir de `connectorProducts`.
+- **[Risco]** Categorizar eventos de webhook além de `item/created`/`item/updated` (D28) aumenta o
+  volume de eventos que o drenador processa (incluindo `item/error`, que pode repetir enquanto a
+  conexão estiver quebrada) → **[Mitigação]** `OBSERVATION_REFRESH` não roda Position/History nem
+  adquire lease — é só uma releitura + escrita atômica de observação, barata e sem risco de
+  concorrência com uma ingestão em andamento.
 
 ## Migration Plan
 
-1. Migrations aditivas primeiro (`radar_pluggy_item_observations`, `radar_pluggy_calls`,
-   `radar_pluggy_item_ingestion_leases`, `radar_pluggy_credential_items` + colunas de connector e
-   `connector_products`) — não quebram nada em produção porque nenhum código ainda as lê.
-2. Migration de `radar_pluggy_sync_progress` (cria, com `consumer` + `source` +
+1. `pluggy-source-catalog.ts` (D32) primeiro — sem dependência de nada, e todo o resto (parsing de
+   shape, `pluggy-sync-progress`, `/credentials/status`) passa a usá-lo em vez de repetir a tradução.
+2. Migrations aditivas (`radar_pluggy_item_observations` com schema completo — D33 —,
+   `radar_pluggy_calls` com schema completo — D24 —, `radar_pluggy_item_ingestion_leases` com
+   `fencing_token` — D16 —, `radar_pluggy_credential_items` + colunas de connector,
+   `connector_products` e `inactive_at` — D19, D29) — não quebram nada em produção porque nenhum
+   código ainda as lê.
+3. Migration de `radar_pluggy_sync_progress` (cria, com `consumer` + `source` +
    `last_completed_version_at`) + remoção de `radar_pluggy_history_sync_states` (drop) na mesma
    migration — seguro porque a tabela está vazia em todos os ambientes consultados.
-3. Correções de shape (D6, D7) entram isoladas, antes de qualquer interactor passar a depender delas.
-4. Escrita atômica (D17) nos repositórios já existentes (`PluggyItemRep`, `PluggyHistoryCoverageRep`)
+4. Correções de shape (D6, D7, D26, D27) entram isoladas, antes de qualquer interactor passar a
+   depender delas: chave `investmentTransactions`, `loans` em `PRODUCT_KEYS`, `itemProducts` parseado
+   do payload bruto, `updatedAt` parseado como campo obrigatório.
+5. Escrita atômica (D17) nos repositórios já existentes (`PluggyItemRep`, `PluggyHistoryCoverageRep`)
    entra antes da reescrita dos interactors — reduz o raio de um rollback, e corrige um problema que
    já existe em `staging` independente do resto deste change.
-5. Reescrita dos dois interactors (D4, D5, D12, D13, D14, D21) depois das correções de shape e da
-   escrita atômica.
-6. Lease de ingestão (D16) + reescrita de `webhook-drainer.ts`/`load-pluggy-item-in-background.ts`/
-   rota manual (D11, D15) — depende de D4/D5 (marca d'água por fonte) já existir para o "cada lado
-   tenta de novo barato" funcionar.
-7. Instrumentação (D1–D3, D22) depois disso — não depende de D4–D21, mas entra por último porque é a
-   peça mais nova (`AsyncLocalStorage`) e a que mais se beneficia de rodar sobre um portão e uma
-   coordenação já corrigidos.
-8. `/credentials/status` (D8–D10, D18–D20) por último no backend — depende da observação (D9) e do
-   connector (D8/D19) já existirem. Mudança aditiva (`items[]`) — pode ir a produção sem o front
-   estar pronto para consumi-lo.
-9. `oplab-radar-front` consome `items[]`/`sources` num PR próprio, depois do passo 8 publicado.
+6. Reescrita dos dois interactors (D4, D5, D12, D13, D14, D21, D26, D27) depois das correções de
+   shape e da escrita atômica.
+7. Lease de ingestão com fencing token e heartbeat (D16) + `pluggy-item-ingestion.ts` (D11, D15) +
+   reescrita de `webhook-drainer.ts` (D15, D16, D23 — `trigger` explícito) + rota manual (D30) —
+   depende de D4/D5 (marca d'água por fonte) já existir para o "cada lado tenta de novo barato"
+   funcionar.
+8. Categorização de eventos de webhook (D28) + `inactive_at`/`DISCONNECTED` (D28, D29) — depende do
+   lease (passo 7) só para a categoria `FULL_INGESTION`; `OBSERVATION_REFRESH`/`TERMINAL` não
+   dependem dele.
+9. `PluggyCallRecorder` (D31) + instrumentação (D1–D3, D22) — depende do passo 7/8 só na medida em
+   que os pontos de chamada (`clientFor`, `validateItemAccess`, `provisionFor`) já existem; entra por
+   último porque é a peça mais nova (`AsyncLocalStorage` + serviço singleton) e a que mais se
+   beneficia de rodar sobre um portão e uma coordenação já corrigidos.
+10. `/credentials/status` (D8–D10, D18–D20, D26) por último no backend — depende da observação (D9),
+    do connector (D8/D19/D26) e da categorização de eventos (D28, para `DISCONNECTED`) já existirem.
+    Mudança aditiva (`items[]`) — pode ir a produção sem o front estar pronto para consumi-lo.
+11. `oplab-radar-front` consome `items[]`/`sources` num PR próprio, depois do passo 10 publicado.
 
 Rollback: cada passo é uma migration aditiva ou uma troca de leitura sem mudança de escrita anterior
-— reverter é possível parando no passo anterior, exceto o passo 2 (drop de
+— reverter é possível parando no passo anterior, exceto o passo 3 (drop de
 `radar_pluggy_history_sync_states`), que é irreversível sem recriar a tabela vazia — aceitável dado
 que nenhum ambiente consultado tem dado nela.

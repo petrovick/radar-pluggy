@@ -3,13 +3,18 @@
 ### Requirement: Atualização diária é reativa à Pluggy
 O sistema MUST reagir a `item/created` e `item/updated` recebidos pelo webhook local, reler o item e
 exigir marca d'água nova, por fonte real (`ACCOUNTS`, `ACCOUNT_TRANSACTIONS`, `INVESTMENTS`,
-`INVESTMENT_TRANSACTIONS`), exclusiva do histórico — nenhuma das quatro tem marca d'água por
-agrupamento (`CASH`/`CUSTODY`). Cada fonte MUST comparar seu próprio `lastUpdatedAt` reportado pela
-Pluggy (`Item.statusDetail`) contra sua própria marca d'água — não a do item como um todo, nem a de
-outra fonte do mesmo agrupamento. `CASH` é elegível para varredura quando `ACCOUNTS` **ou**
-`ACCOUNT_TRANSACTIONS` estiver desatualizada; `CUSTODY`, quando `INVESTMENTS` **ou**
-`INVESTMENT_TRANSACTIONS` estiver desatualizada. Quando `ACCOUNT_TRANSACTIONS` (ou
-`INVESTMENT_TRANSACTIONS`) está elegível, MUST varrer as transações de **todas** as contas (ou
+`INVESTMENT_TRANSACTIONS`), exclusiva do histórico (consumidor `HISTORY_LOAD`,
+`pluggy-sync-progress`) — nenhuma das quatro tem marca d'água por agrupamento (`CASH`/`CUSTODY`).
+Cada fonte MUST comparar a versão da execução observada para ela — `versionAt`, na definição de
+`pluggy-sync-progress` ("Versão gravada depende de executionStatus": `Item.lastUpdatedAt` quando
+`SUCCESS`, `statusDetail.<fonte>.lastUpdatedAt` quando `PARTIAL_SUCCESS` e utilizável) — contra
+**nossa própria marca d'água persistida** para aquela fonte (`(HISTORY_LOAD, fonte)`), nunca a do
+item como um todo, nem a de outra fonte do mesmo agrupamento. "Versão observada" e "marca d'água"
+são coisas diferentes: a primeira vem da Pluggy a cada leitura; a segunda é o que este serviço já
+persistiu da última vez que processou aquela fonte com sucesso. `CASH` é elegível para varredura
+quando `ACCOUNTS` **ou** `ACCOUNT_TRANSACTIONS` estiver desatualizada; `CUSTODY`, quando
+`INVESTMENTS` **ou** `INVESTMENT_TRANSACTIONS` estiver desatualizada. Quando `ACCOUNT_TRANSACTIONS`
+(ou `INVESTMENT_TRANSACTIONS`) está elegível, MUST varrer as transações de **todas** as contas (ou
 investimentos) que a listagem atual trouxe nesta execução — `Account.updatedAt`/`Investment.updatedAt`
 não são contrato documentado pela Pluggy para "houve transação nova" e por isso nunca decidem sozinhos
 pular a varredura de um recurso específico; podem no máximo otimizar o escopo de uma varredura já
@@ -96,3 +101,13 @@ dado existente.
 - **WHEN** `ACCOUNTS` está recusada nesta execução (`isUpdated` diferente de `true` em
   `PARTIAL_SUCCESS`)
 - **THEN** nenhuma reconciliação ocorre e a fotografia de contas existente permanece intocada
+
+### Requirement: Item inativo (removido pela Pluggy) não contribui contas para a leitura corrente
+Um item cujo vínculo credencial↔item está marcado inativo (`item/deleted`,
+`pluggy-connection-observability`) MUST deixar de ser incluído na leitura de contas de uma pessoa
+(`GET /accounts`, e por extensão o extrato de cartão) — mesmo que a fotografia local ainda tenha
+contas daquele item. Snapshot/raw histórico permanecem preservados.
+
+#### Scenario: Contas não aparecem mais depois do item ser removido
+- **WHEN** um item com contas sincronizadas é marcado inativo por uma notificação `item/deleted`
+- **THEN** `GET /accounts` para a pessoa dona daquele item deixa de incluir as contas desse item

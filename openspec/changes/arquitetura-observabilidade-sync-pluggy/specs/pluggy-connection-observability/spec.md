@@ -2,22 +2,30 @@
 
 Manter o último estado observado de cada conexão Pluggy (`Item`) **já vinculada a uma credencial**,
 atualizado em toda leitura válida desse item — independente de uma sincronização de posição ou
-histórico ter ocorrido — e traduzir esse estado bruto para o vocabulário de conexão que o produto
-expõe ao titular. A leitura de validação de credencial nova, antes de o vínculo existir, fica fora
-desta capability — ela só alimenta o histórico de chamadas (`pluggy-call-history`).
+histórico ter ocorrido, e independente de o evento que motivou a releitura ser `item/created`/
+`item/updated` ou outro evento de observação (`item/error`, `item/waiting_user_input`,
+`item/waiting_user_action`, `item/login_succeeded`) — e traduzir esse estado bruto para o
+vocabulário de conexão que o produto expõe ao titular. Quando a Pluggy notifica que o Item foi
+removido (`item/deleted`), o vínculo é marcado inativo e o `connectionStatus` vira `DISCONNECTED`
+sem nenhuma nova leitura. A leitura de validação de credencial nova, antes de o vínculo existir, fica
+fora desta capability — ela só alimenta o histórico de chamadas (`pluggy-call-history`).
 
 ## ADDED Requirements
 
-### Requirement: Toda leitura válida de um item já vinculado atualiza o estado observado
+### Requirement: Toda leitura válida de um item já vinculado tenta atualizar o estado observado
 Sempre que este serviço lê com sucesso o estado de um item **já vinculado a uma credencial** na
-Pluggy, o estado observado (`status`, `executionStatus`, detalhe por produto, `lastUpdatedAt`,
-`nextAutoSyncAt`, identidade do connector) é atualizado — mesmo quando esse estado não permite
-iniciar nenhuma sincronização. A leitura que valida uma credencial nova, antes de o vínculo
-credencial↔item ser criado, nunca atualiza o estado observado — não existe vínculo ainda para
-associar a observação.
+Pluggy, este serviço **tenta** atualizar o estado observado (`status`, `executionStatus`, detalhe
+por produto, `lastUpdatedAt`, `nextAutoSyncAt`, identidade do connector) — mesmo quando esse estado
+não permite iniciar nenhuma sincronização. Só uma observação cujo `observationStartedAt` for
+estritamente maior que o já armazenado prevalece (ver "Observação nunca retrocede no tempo" abaixo);
+esta regra descreve *quando a tentativa acontece*, não uma garantia de que toda tentativa muda o
+estado gravado. A leitura que valida uma credencial nova, antes de o vínculo credencial↔item ser
+criado, nunca tenta atualizar o estado observado — não existe vínculo ainda para associar a
+observação.
 
 #### Scenario: Item em erro de login ainda assim atualiza a observação
-- **WHEN** o item lido vem com `status` `LOGIN_ERROR`
+- **WHEN** o item lido vem com `status` `LOGIN_ERROR` e a leitura tem `observationStartedAt` mais
+  novo que o já armazenado
 - **THEN** o estado observado passa a refletir `LOGIN_ERROR`, mesmo que nenhuma sincronização de
   posição ou histórico seja iniciada
 
@@ -59,8 +67,11 @@ a que começou a ler primeiro.
 
 ### Requirement: Estado bruto da Pluggy é traduzido para um vocabulário fechado de conexão
 O par (`status`, `executionStatus`) do item é traduzido para exatamente um entre: `CONNECTING`,
-`CONNECTED`, `PARTIAL`, `NEEDS_RECONNECT`, `AWAITING_USER_INPUT`, `STALE`, `UNKNOWN`. Todo valor de
-`status` que o item pode assumir tem uma tradução definida — nenhum cai em erro por falta de mapeamento.
+`CONNECTED`, `PARTIAL`, `NEEDS_RECONNECT`, `AWAITING_USER_INPUT`, `STALE`, `DISCONNECTED`, `UNKNOWN`.
+Todo valor de `status` que o item pode assumir tem uma tradução definida — nenhum cai em erro por
+falta de mapeamento. `DISCONNECTED` nunca vem de `(status, executionStatus)` — vem exclusivamente de
+o vínculo credencial↔item estar marcado inativo (ver "Item removido pela Pluggy" abaixo), e essa
+verificação precede qualquer tradução do par `(status, executionStatus)`.
 
 #### Scenario: Conexão saudável
 - **WHEN** o item observado tem `status` `UPDATED` e `executionStatus` `SUCCESS`
@@ -104,6 +115,43 @@ metadata mais nova.
 - **WHEN** uma observação é recusada por ter `observationStartedAt` menor ou igual ao já registrado
 - **THEN** a identidade do connector do vínculo permanece a que já estava persistida, mesmo que o
   payload recusado trouxesse um `connector` diferente
+
+### Requirement: Estado observado distingue produtos habilitados no Item de produtos suportados pelo connector
+O estado observado de um Item MUST guardar os produtos habilitados **daquele Item**
+(`itemProducts` — pode mudar se o Item for atualizado na Pluggy), separado dos produtos que o
+connector suporta como instituição (`connectorProducts`, capturado junto da identidade do connector
+— `pluggy-item`). Quando o payload do Item não trouxer essa lista de forma reconhecível,
+`itemProducts` MUST ficar em um estado `UNKNOWN` explícito — nunca `[]`, e nunca derivado de
+`connectorProducts`.
+
+#### Scenario: Item com subconjunto de produtos habilitados
+- **WHEN** um Item é observado e seu payload traz `products: ["ACCOUNTS", "TRANSACTIONS"]`, mesmo
+  que o connector suporte também `INVESTMENTS`
+- **THEN** o estado observado registra `itemProducts` como `["ACCOUNTS", "TRANSACTIONS"]` — sem
+  incluir `INVESTMENTS`
+
+#### Scenario: Produtos do Item não reconhecíveis no payload viram UNKNOWN, nunca vazio
+- **WHEN** o payload de um Item não traz a lista de produtos habilitados em formato reconhecível
+- **THEN** `itemProducts` fica em estado `UNKNOWN` — nunca é tratado como lista vazia, e nenhuma fonte
+  é considerada habilitada ou desabilitada com base nisso
+
+### Requirement: Item removido pela Pluggy (item/deleted) fica DISCONNECTED, sem nova tentativa de leitura
+Quando a Pluggy notifica que um Item foi removido (`item/deleted`), este serviço MUST marcar o
+vínculo credencial↔item correspondente como inativo, e nunca tenta ler esse Item na Pluggy de novo
+(o recurso não existe mais). O `connectionStatus` traduzido para esse item passa a ser
+`DISCONNECTED` imediatamente, a partir só do marcador de inatividade — sem depender de nenhuma nova
+observação. Uma vez inativo, o item nunca mais é considerado elegível para releitura por nenhum
+trigger.
+
+#### Scenario: item/deleted marca o vínculo inativo sem tentar reler
+- **WHEN** este serviço recebe uma notificação `item/deleted` para um item vinculado
+- **THEN** o vínculo é marcado inativo, nenhuma chamada `fetchItem` é feita para esse item, e o
+  `connectionStatus` traduzido passa a `DISCONNECTED`
+
+#### Scenario: Item inativo nunca volta a CONNECTED sem novo cadastro
+- **WHEN** um item já marcado inativo é consultado novamente (por exemplo, em `/credentials/status`)
+- **THEN** o `connectionStatus` continua `DISCONNECTED`, independente do que a última observação
+  antes da remoção tinha registrado
 
 ### Requirement: Item nunca observado responde estado desconhecido, nunca vazio silencioso
 Quando um item está vinculado a uma credencial mas ainda não existe nenhuma observação registrada
