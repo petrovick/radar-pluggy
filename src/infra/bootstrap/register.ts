@@ -11,7 +11,11 @@ import { PluggyConsentsGateway } from '../../adapters/gateways/pluggy-consents.g
 import SyncPluggyPositionImpl from '../../adapters/gateways/pluggy-position/sync-pluggy-position.impl.js'
 import LoadPluggyHistoryImpl from '../../adapters/gateways/pluggy-history/load-pluggy-history.impl.js'
 import { PluggyItemCredentialResolver } from '../../adapters/gateways/pluggy-item-credential.resolver.js'
+import { PluggyPersonItemResolver } from '../../adapters/gateways/pluggy-person-item.resolver.js'
 import { PluggyWebhookProvisioner } from '../../adapters/gateways/pluggy-webhook.provisioner.js'
+import ReadPluggyPositionImpl from '../../adapters/gateways/pluggy-position/read-pluggy-position.impl.js'
+import ReadPluggyAccountImpl from '../../adapters/gateways/pluggy-account/read-pluggy-account.impl.js'
+import ReadPluggyAccountStatementImpl from '../../adapters/gateways/pluggy-account-transaction/read-pluggy-account-statement.impl.js'
 import { PluggyAccountsGateway } from '../../adapters/gateways/pluggy-accounts.gateway.js'
 import { PluggyAccountTransactionsGateway } from '../../adapters/gateways/pluggy-account-transactions.gateway.js'
 import { PluggyInvestmentTransactionsGateway } from '../../adapters/gateways/pluggy-investment-transactions.gateway.js'
@@ -43,6 +47,9 @@ import { PluggyAccountTransactionRawRep } from '../../adapters/repositories/plug
 import { PluggyInvestmentTransactionRawRep } from '../../adapters/repositories/pluggy-investment-transaction-raw.rep.js'
 import { PluggyLoanRawRep } from '../../adapters/repositories/pluggy-loan-raw.rep.js'
 import { SyncPluggyPositionInteractor } from '../../interactors/pluggy-position/sync/sync-pluggy-position.interactor.js'
+import { ReadPluggyPositionInteractor } from '../../interactors/pluggy-position/read/read-pluggy-position.interactor.js'
+import { ReadPluggyAccountInteractor } from '../../interactors/pluggy-account/read/read-pluggy-account.interactor.js'
+import { ReadPluggyAccountStatementInteractor } from '../../interactors/pluggy-account-transaction/read/read-pluggy-account-statement.interactor.js'
 import { LoadPluggyHistoryInteractor } from '../../interactors/pluggy-history/load/load-pluggy-history.interactor.js'
 import { AcceptPluggyWebhookInteractor } from '../../interactors/pluggy-webhook/accept/accept-pluggy-webhook.interactor.js'
 import { ReconcilePluggyWebhookInteractor } from '../../interactors/pluggy-webhook/reconcile/reconcile-pluggy-webhook.interactor.js'
@@ -74,6 +81,9 @@ export type AppContainer = {
 
   /** Interactor */
   syncPluggyPositionInteractor: SyncPluggyPositionInteractor
+  readPluggyPositionInteractor: ReadPluggyPositionInteractor
+  readPluggyAccountInteractor: ReadPluggyAccountInteractor
+  readPluggyAccountStatementInteractor: ReadPluggyAccountStatementInteractor
   loadPluggyHistoryInteractor: LoadPluggyHistoryInteractor
   acceptPluggyWebhookInteractor: AcceptPluggyWebhookInteractor
   reconcilePluggyWebhookInteractor: ReconcilePluggyWebhookInteractor
@@ -83,6 +93,9 @@ export type AppContainer = {
 
   /** Gateway de caso de uso (impl) */
   syncPluggyPositionImpl: SyncPluggyPositionImpl
+  readPluggyPositionImpl: ReadPluggyPositionImpl
+  readPluggyAccountImpl: ReadPluggyAccountImpl
+  readPluggyAccountStatementImpl: ReadPluggyAccountStatementImpl
   loadPluggyHistoryImpl: LoadPluggyHistoryImpl
   acceptPluggyWebhookImpl: AcceptPluggyWebhookImpl
   reconcilePluggyWebhookImpl: ReconcilePluggyWebhookImpl
@@ -103,6 +116,7 @@ export type AppContainer = {
 
   /** Colaborador compartilhado entre impls (arquitetura-camadas, 2.3.1) */
   pluggyItemCredentialResolver: PluggyItemCredentialResolver
+  pluggyPersonItemResolver: PluggyPersonItemResolver
   pluggyWebhookProvisioner: PluggyWebhookProvisioner
 
   /** Repositório */
@@ -163,6 +177,7 @@ export function setupContainer(config: Config): AppContainerInstance {
     pluggyAccountTransactionsGateway: asClass(PluggyAccountTransactionsGateway).singleton(),
     pluggyInvestmentTransactionsGateway: asClass(PluggyInvestmentTransactionsGateway).singleton(),
     pluggyItemCredentialResolver: asClass(PluggyItemCredentialResolver).scoped(),
+    pluggyPersonItemResolver: asClass(PluggyPersonItemResolver).scoped(),
     pluggyWebhookProvisioner: asClass(PluggyWebhookProvisioner).scoped(),
     pluggyWebhooksGateway: asClass(PluggyWebhooksGateway).singleton(),
 
@@ -190,6 +205,9 @@ export function setupContainer(config: Config): AppContainerInstance {
     pluggyLoanRawRep: asClass(PluggyLoanRawRep).scoped(),
 
     syncPluggyPositionImpl: asClass(SyncPluggyPositionImpl).scoped(),
+    readPluggyPositionImpl: asClass(ReadPluggyPositionImpl).scoped(),
+    readPluggyAccountImpl: asClass(ReadPluggyAccountImpl).scoped(),
+    readPluggyAccountStatementImpl: asClass(ReadPluggyAccountStatementImpl).scoped(),
     loadPluggyHistoryImpl: asClass(LoadPluggyHistoryImpl).scoped(),
     acceptPluggyWebhookImpl: asClass(AcceptPluggyWebhookImpl).scoped(),
     reconcilePluggyWebhookImpl: asClass(ReconcilePluggyWebhookImpl).scoped(),
@@ -198,6 +216,9 @@ export function setupContainer(config: Config): AppContainerInstance {
     checkHealthImpl: asClass(CheckHealthImpl).scoped(),
 
     syncPluggyPositionInteractor: asClass(SyncPluggyPositionInteractor).scoped(),
+    readPluggyPositionInteractor: asClass(ReadPluggyPositionInteractor).scoped(),
+    readPluggyAccountInteractor: asClass(ReadPluggyAccountInteractor).scoped(),
+    readPluggyAccountStatementInteractor: asClass(ReadPluggyAccountStatementInteractor).scoped(),
     loadPluggyHistoryInteractor: asClass(LoadPluggyHistoryInteractor).scoped(),
     acceptPluggyWebhookInteractor: asClass(AcceptPluggyWebhookInteractor).scoped(),
     reconcilePluggyWebhookInteractor: asClass(ReconcilePluggyWebhookInteractor).scoped(),

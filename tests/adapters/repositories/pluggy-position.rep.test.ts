@@ -210,4 +210,29 @@ describe('PluggyPositionRep.save', () => {
       repository.save({ ...baseInput('item-x', ''), investmentId: '' }),
     ).rejects.toBeInstanceOf(ApplicationError)
   })
+
+  it('findByItemIds devolve as posições de todos os itens informados, e só deles', async () => {
+    // `afterEach` só limpa um item por teste (`itemIdsToCleanup.pop()`); com três itens, a limpeza
+    // é feita aqui mesmo, em `finally`, em vez de empilhar os outros dois pra sempre.
+    const itemA = randomUUID()
+    const itemB = randomUUID()
+    const itemC = randomUUID()
+
+    try {
+      await repository.save(baseInput(itemA, randomUUID()))
+      await repository.save(baseInput(itemB, randomUUID()))
+      await repository.save(baseInput(itemC, randomUUID()))
+
+      const found = await repository.findByItemIds([itemA, itemB])
+
+      expect(found).toHaveLength(2)
+      expect(found.map((p) => p.getItemId()).sort()).toEqual([itemA, itemB].sort())
+    } finally {
+      await model.destroy({ where: { item_id: [itemA, itemB, itemC] } })
+    }
+  })
+
+  it('findByItemIds com lista vazia devolve lista vazia, sem consultar o banco', async () => {
+    await expect(repository.findByItemIds([])).resolves.toEqual([])
+  })
 })

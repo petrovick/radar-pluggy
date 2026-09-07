@@ -114,6 +114,18 @@ export class PluggyPositionRep {
     await row.update(toRow(draft, now), transaction ? { transaction } : {})
     return draft
   }
+
+  async findByItemIds(itemIds: string[]): Promise<PluggyPosition[]> {
+    if (itemIds.length === 0) {
+      return []
+    }
+    const transaction = this.getTransaction(DB_NAMES.MAIN)
+    const rows = await this.model.findAll({
+      where: { item_id: itemIds },
+      ...(transaction ? { transaction } : {}),
+    })
+    return rows.map((row) => toEntity(row.get({ plain: true })))
+  }
 }
 
 function toRow(position: PluggyPosition, now: Date): PluggyPositionRow {

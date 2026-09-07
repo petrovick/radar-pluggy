@@ -1,14 +1,18 @@
 import express, { type Express, type NextFunction, type Request, type Response } from 'express'
 import { registerPluggyCredentialHandler } from '../../adapters/handlers/register-pluggy-credential.handler.js'
 import { checkPluggyCredentialHandler } from '../../adapters/handlers/check-pluggy-credential.handler.js'
+import { readPluggyPositionHandler } from '../../adapters/handlers/read-pluggy-position.handler.js'
+import { readPluggyAccountHandler } from '../../adapters/handlers/read-pluggy-account.handler.js'
+import { readPluggyAccountStatementHandler } from '../../adapters/handlers/read-pluggy-account-statement.handler.js'
 import { createAuthenticateMiddleware } from './middleware/authenticate.middleware.js'
 import { createRequestScopeMiddleware } from './middleware/request-scope.middleware.js'
 import type { AppContainerInstance } from '../bootstrap/register.js'
-import { loadPluggyHistoryHandler } from '../../adapters/handlers/load-pluggy-history.handler.js'
+import { createLoadPluggyHistoryHandler } from '../../adapters/handlers/load-pluggy-history.handler.js'
 import { createPluggyWebhookHandler } from '../../adapters/handlers/pluggy-webhook.handler.js'
 import { reconcilePluggyWebhookHandler } from '../../adapters/handlers/reconcile-pluggy-webhook.handler.js'
 import { checkHealthHandler } from '../../adapters/handlers/health.handler.js'
 import { drainInBackground } from '../worker/webhook-drainer.js'
+import { syncPluggyPositionInBackground } from '../worker/sync-pluggy-position-in-background.js'
 
 export interface HttpServerDependencies {
   jwtSecret: string
@@ -39,8 +43,29 @@ export function createHttpServer(deps: HttpServerDependencies): Express {
   // decidir visibilidade de menus que dependem de credencial já cadastrada.
   app.get('/credentials/status', authenticate, checkPluggyCredentialHandler)
 
-  // Carga histórica manual, só por decisão explícita do titular (tasks.md 6.3).
-  app.post('/items/:itemId/history/load', authenticate, loadPluggyHistoryHandler)
+  // Carga histórica manual, só por decisão explícita do titular (tasks.md 6.3). Sincronização de
+  // posição dispara em background depois da resposta, em escopo próprio — nunca o da requisição
+  // (mesma forma do webhook, container raiz + callback injetado).
+  app.post(
+    '/items/:itemId/history/load',
+    authenticate,
+    createLoadPluggyHistoryHandler(deps.container, (container, itemId) =>
+      syncPluggyPositionInBackground(container, itemId, (error) => {
+        container.resolve('logger').error('falha ao sincronizar posição após carga manual', { err: error, itemId })
+      }),
+    ),
+  )
+
+  // Portfolio consolidado da pessoa, cruzando todas as instituições Pluggy conectadas — leitura
+  // pura do que a sincronização já persistiu (fronteira-pluggy regra 6).
+  app.get('/portfolio', authenticate, readPluggyPositionHandler)
+
+  // Contas (depósito e cartão) da pessoa, cruzando instituições — mesma leitura pura.
+  app.get('/accounts', authenticate, readPluggyAccountHandler)
+
+  // Extrato de cartão por fatura prevista — nunca por mês civil calculado (fronteira-pluggy,
+  // contrato já fixado pelo `oplab-radar-front`).
+  app.get('/accounts/:accountId/transactions', authenticate, readPluggyAccountStatementHandler)
 
   // Webhook da Pluggy: sem JWT (quem autentica é o segredo de entrada da credencial, comparado
   // em tempo constante), responde 2xx com o evento já persistido e drena depois da resposta.

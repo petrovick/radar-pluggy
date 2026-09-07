@@ -105,6 +105,14 @@ export class PluggyAccountRep {
     return row ? toEntity(row.get({ plain: true })) : undefined
   }
 
+  async findByItemIds(itemIds: string[]): Promise<PluggyAccount[]> {
+    if (itemIds.length === 0) {
+      return []
+    }
+    const rows = await this.model.findAll({ where: { item_id: itemIds } })
+    return rows.map((r) => toEntity(r.get({ plain: true })))
+  }
+
   // Transação vigente do escopo, nunca por parâmetro (arquitetura-camadas, regra 2.4).
   private transactionOptions(): { transaction?: NonNullable<ReturnType<GetTransaction>> } {
     const transaction = this.getTransaction(DB_NAMES.MAIN)

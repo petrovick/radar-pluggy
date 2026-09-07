@@ -2,6 +2,9 @@ import { afterAll, describe, expect, it } from 'vitest'
 import { setupContainer } from '../../../src/infra/bootstrap/register.js'
 import { createScope } from '../../../src/infra/bootstrap/scope.js'
 import { SyncPluggyPositionInteractor } from '../../../src/interactors/pluggy-position/sync/sync-pluggy-position.interactor.js'
+import { ReadPluggyPositionInteractor } from '../../../src/interactors/pluggy-position/read/read-pluggy-position.interactor.js'
+import { ReadPluggyAccountInteractor } from '../../../src/interactors/pluggy-account/read/read-pluggy-account.interactor.js'
+import { ReadPluggyAccountStatementInteractor } from '../../../src/interactors/pluggy-account-transaction/read/read-pluggy-account-statement.interactor.js'
 import { RegisterPluggyCredentialInteractor } from '../../../src/interactors/pluggy-credential/register/register-pluggy-credential.interactor.js'
 import { CheckPluggyCredentialInteractor } from '../../../src/interactors/pluggy-credential/check/check-pluggy-credential.interactor.js'
 import { CheckHealthInteractor } from '../../../src/interactors/health/check/check-health.interactor.js'
@@ -24,6 +27,30 @@ describe('container do processo', () => {
     const interactor = scope.resolve('syncPluggyPositionInteractor')
 
     expect(interactor).toBeInstanceOf(SyncPluggyPositionInteractor)
+  })
+
+  it('resolve o interactor de leitura de posição com a árvore inteira de dependências', () => {
+    const scope = createScope(container, 'test-request-id')
+
+    const interactor = scope.resolve('readPluggyPositionInteractor')
+
+    expect(interactor).toBeInstanceOf(ReadPluggyPositionInteractor)
+  })
+
+  it('resolve o interactor de leitura de contas com a árvore inteira de dependências', () => {
+    const scope = createScope(container, 'test-request-id')
+
+    const interactor = scope.resolve('readPluggyAccountInteractor')
+
+    expect(interactor).toBeInstanceOf(ReadPluggyAccountInteractor)
+  })
+
+  it('resolve o interactor de leitura de extrato de cartão com a árvore inteira de dependências', () => {
+    const scope = createScope(container, 'test-request-id')
+
+    const interactor = scope.resolve('readPluggyAccountStatementInteractor')
+
+    expect(interactor).toBeInstanceOf(ReadPluggyAccountStatementInteractor)
   })
 
   it('resolve os casos de uso de credencial com a árvore inteira de dependências', () => {
