@@ -22,8 +22,19 @@ describe('ReadPluggyPositionImpl.readPositionsByItemIds', () => {
     logger: { addContext: () => {}, info: () => {}, warn: () => {}, error: () => {} },
   } as unknown as AppContainer
   const mutable = container as unknown as Record<string, unknown>
+  const connectorNamesByItem = new Map<string, string>()
   mutable.pluggyPositionRep = new PluggyPositionRep(container)
   mutable.pluggyPersonItemResolver = { itemIdsFor: async () => [] }
+  mutable.pluggyCredentialItemRep = {
+    findConnectorNamesByItemIds: async (ids: string[]) => {
+      const result = new Map<string, string>()
+      for (const id of ids) {
+        const name = connectorNamesByItem.get(id)
+        if (name) result.set(id, name)
+      }
+      return result
+    },
+  }
 
   const impl = new ReadPluggyPositionImpl(container)
   const itemIdsToCleanup: string[] = []
@@ -64,6 +75,7 @@ describe('ReadPluggyPositionImpl.readPositionsByItemIds', () => {
   })
 
   afterEach(async () => {
+    connectorNamesByItem.clear()
     const itemId = itemIdsToCleanup.pop()
     if (itemId !== undefined) {
       await model.destroy({ where: { item_id: itemId } })
@@ -74,24 +86,23 @@ describe('ReadPluggyPositionImpl.readPositionsByItemIds', () => {
     await sequelize.close()
   })
 
-  it('formata decimal com a escala da coluna e data em ISO, campo ausente vira null', async () => {
-    const itemId = randomUUID()
-    const investmentId = randomUUID()
-    itemIdsToCleanup.push(itemId)
-
-    const rep = new PluggyPositionRep(container)
-    await rep.save({
-      investmentId,
-      itemId,
+  function buildPositionInput(overrides: Partial<Parameters<PluggyPositionRep['save']>[0]> = {}) {
+    return {
+      investmentId: randomUUID(),
+      itemId: randomUUID(),
       type: 'EQUITY',
       subtype: undefined,
-      name: 'PETR4',
+      name: 'Exemplo',
       code: undefined,
       isin: undefined,
       currencyCode: 'BRL',
-      balance: new Decimal('1500.5'),
-      quantity: new Decimal('10'),
+      balance: new Decimal('100'),
+      quantity: undefined,
       amountOriginal: undefined,
+      value: undefined,
+      amount: undefined,
+      taxes: undefined,
+      taxes2: undefined,
       status: undefined,
       institutionName: undefined,
       institutionNumber: undefined,
@@ -103,7 +114,7 @@ describe('ReadPluggyPositionImpl.readPositionsByItemIds', () => {
       dueDate: undefined,
       issuer: undefined,
       issueDate: undefined,
-      purchaseDate: new Date('2024-01-01T00:00:00.000Z'),
+      purchaseDate: undefined,
       rate: undefined,
       rateType: undefined,
       fixedAnnualRate: undefined,
@@ -112,20 +123,155 @@ describe('ReadPluggyPositionImpl.readPositionsByItemIds', () => {
       lastTwelveMonthsRate: undefined,
       owner: undefined,
       metadata: undefined,
-    })
+      ...overrides,
+    }
+  }
+
+  it('formata decimal com a escala da coluna e data em ISO, quotaDate é string obrigatória, campos ausentes viram null', async () => {
+    const itemId = randomUUID()
+    const investmentId = randomUUID()
+    itemIdsToCleanup.push(itemId)
+    connectorNamesByItem.set(itemId, 'BTGPactual Investimentos')
+
+    const rep = new PluggyPositionRep(container)
+    await rep.save(
+      buildPositionInput({
+        investmentId,
+        itemId,
+        type: 'EQUITY',
+        subtype: 'STOCK',
+        name: 'SAPR4',
+        code: 'SAPR4',
+        isin: 'BRSAPRACNPR6',
+        currencyCode: 'BRL',
+        balance: new Decimal('1500.5'),
+        quantity: new Decimal('10'),
+        status: 'ACTIVE',
+        amountWithdrawal: new Decimal('1500.5'),
+        purchaseDate: new Date('2024-01-01T00:00:00.000Z'),
+      }),
+    )
 
     const [view] = await impl.readPositionsByItemIds([itemId])
+    expect(view).toBeDefined()
+    if (!view) return
 
     expect(view).toMatchObject({
       investmentId,
       type: 'EQUITY',
-      subtype: null,
+      subtype: 'STOCK',
+      name: 'SAPR4',
+      code: 'SAPR4',
+      isin: 'BRSAPRACNPR6',
+      currencyCode: 'BRL',
       balance: '1500.50',
       quantity: '10.00000000',
       value: null,
+      amountOriginal: null,
+      amount: null,
+      taxes: null,
+      taxes2: null,
+      amountWithdrawal: '1500.50',
+      amountProfit: null,
+      status: 'ACTIVE',
+      quotaDate: '2026-08-01T00:00:00.000Z',
       dueDate: null,
-      institutionName: null,
+      issueDate: null,
       purchaseDate: '2024-01-01T00:00:00.000Z',
+      issuer: null,
+      issuerCnpj: null,
+      rate: null,
+      rateType: null,
+      fixedAnnualRate: null,
+      lastMonthRate: null,
+      annualRate: null,
+      lastTwelveMonthsRate: null,
+      institutionName: null,
+      institutionNumber: null,
+      sourceInstitutionName: 'BTGPactual Investimentos',
+      number: null,
+      owner: null,
+      metadata: null,
     })
+    expect(typeof view.quotaDate).toBe('string')
+  })
+
+  it('preserva estritamente institutionName, sourceInstitutionName e issuer como conceitos independentes sem sobrescrita', async () => {
+    const itemId = randomUUID()
+    const investmentId = randomUUID()
+    itemIdsToCleanup.push(itemId)
+    connectorNamesByItem.set(itemId, 'BTGPactual Investimentos')
+
+    const rep = new PluggyPositionRep(container)
+    await rep.save(
+      buildPositionInput({
+        investmentId,
+        itemId,
+        type: 'FIXED_INCOME',
+        subtype: 'CDB',
+        name: 'CDB - BANCO PINE S/A',
+        code: 'CDB1266VXHA',
+        balance: new Decimal('7503.99'),
+        quantity: new Decimal('7'),
+        value: new Decimal('1089.99714286'),
+        amountOriginal: new Decimal('7000.00'),
+        amount: new Decimal('7629.98'),
+        taxes: new Decimal('125.99'),
+        taxes2: new Decimal('0.00'),
+        status: 'ACTIVE',
+        quotaDate: new Date('2026-09-07T03:00:00.000Z'),
+        issuerCnpj: '62.144.175/0001-20',
+        amountWithdrawal: new Decimal('7503.99'),
+        dueDate: new Date('2030-01-21T06:00:00.000Z'),
+        issuer: 'BANCO PINE S/A',
+        issueDate: new Date('2026-01-19T06:00:00.000Z'),
+        purchaseDate: new Date('2026-01-19T06:00:00.000Z'),
+        rate: new Decimal('100.00'),
+        rateType: 'IPCA',
+        fixedAnnualRate: new Decimal('8.90'),
+      }),
+    )
+
+    const [view] = await impl.readPositionsByItemIds([itemId])
+    expect(view).toBeDefined()
+    if (!view) return
+
+    expect(view.institutionName).toBeNull()
+    expect(view.sourceInstitutionName).toBe('BTGPactual Investimentos')
+    expect(view.issuer).toBe('BANCO PINE S/A')
+    expect(view.rate).toBe('100.00000000')
+    expect(view.rateType).toBe('IPCA')
+    expect(view.fixedAnnualRate).toBe('8.90000000')
+    expect(view.amountOriginal).toBe('7000.00')
+    expect(view.amount).toBe('7629.98')
+    expect(view.taxes).toBe('125.99')
+    expect(view.taxes2).toBe('0.00')
+    expect(view.issuerCnpj).toBe('62.144.175/0001-20')
+  })
+
+  it('devolve sourceInstitutionName como null quando conector não é encontrado no mapa', async () => {
+    const itemId = randomUUID()
+    const investmentId = randomUUID()
+    itemIdsToCleanup.push(itemId)
+
+    const rep = new PluggyPositionRep(container)
+    await rep.save(
+      buildPositionInput({
+        investmentId,
+        itemId,
+        type: 'MUTUAL_FUND',
+        subtype: 'INVESTMENT_FUND',
+        name: 'Fundo Exemplo',
+        balance: new Decimal('500.00'),
+        quotaDate: new Date('2026-09-07T03:00:00.000Z'),
+      }),
+    )
+
+    const [view] = await impl.readPositionsByItemIds([itemId])
+    expect(view).toBeDefined()
+    if (!view) return
+
+    expect(view.sourceInstitutionName).toBeNull()
   })
 })
+

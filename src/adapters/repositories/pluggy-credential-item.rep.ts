@@ -170,4 +170,26 @@ export class PluggyCredentialItemRep {
       { where: { item_id: itemId, inactive_at: null }, ...(transaction ? { transaction } : {}) },
     )
   }
+
+  // Resolução em lote de connector_name por item_id (sem N+1) para enriquecer o contrato de
+  // visualização de posições com `sourceInstitutionName`. Ausente/nulo devolve undefined no mapa.
+  async findConnectorNamesByItemIds(itemIds: string[]): Promise<Map<string, string>> {
+    if (itemIds.length === 0) {
+      return new Map()
+    }
+    const transaction = this.getTransaction(DB_NAMES.MAIN)
+    const rows = await this.model.findAll({
+      where: { item_id: itemIds },
+      attributes: ['item_id', 'connector_name'],
+      ...(transaction ? { transaction } : {}),
+    })
+    const map = new Map<string, string>()
+    for (const row of rows) {
+      const data = row.get()
+      if (data.item_id && data.connector_name) {
+        map.set(data.item_id, data.connector_name)
+      }
+    }
+    return map
+  }
 }
