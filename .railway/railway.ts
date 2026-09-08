@@ -12,7 +12,7 @@ export default defineRailway(() => {
     preDeploy: 'node node_modules/sequelize-cli/lib/sequelize db:migrate --env staging',
     // Domínio customizado, anexado à parte (MCP Railway `generate-domain`) — `config apply` recusa
     // CRIAR domínio custom por IaC. Declarado aqui só como documentação do estado real.
-    domains: ['radar-pluggy.petrovick.work'],
+    domains: ['radar-pluggy.petrovick.work', 'radar-pluggy.petrovick.dev'],
     env: {
       NODE_ENV: 'staging',
       // Mesmo banco físico do `oplab-radar-api` (schema `oplab_radar`, mesmo Aiven) — referência
