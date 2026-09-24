@@ -122,13 +122,13 @@ describe('createPluggyWebhookHandler', () => {
     expect(sent.body).toEqual({ data: { accepted: true, alreadyKnown: true } })
   })
 
-  it('sem header de segredo, o caso de uso recebe string vazia e recusa — nunca undefined vazando', async () => {
+  it('cookie de usuário não substitui segredo do webhook', async () => {
     let received: { providedSecret?: string } = {}
-    const { res } = buildResponse()
+    const { res, sent } = buildResponse()
     const handler = createPluggyWebhookHandler(container, () => {})
 
     const req = {
-      headers: {},
+      headers: { cookie: `radar_session=${'a'.repeat(64)}` },
       body: { eventId: 'evt-1', itemId: ITEM_ID, event: 'item/updated' },
       container: {
         resolve: () => ({
@@ -143,6 +143,7 @@ describe('createPluggyWebhookHandler', () => {
     await handler(req, res)
 
     expect(received.providedSecret).toBe('')
+    expect(sent.status).toBe(401)
   })
 
   it('erro inesperado responde 500 controlado, nunca stack trace', async () => {

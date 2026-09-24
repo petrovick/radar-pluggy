@@ -42,6 +42,87 @@ function fakeResponse(): Response {
 }
 
 describe('createAuthenticateMiddleware', () => {
+  const introspection = {
+    url: 'http://oplab-radar-api:3001/internal/sessions/introspect',
+    serviceToken: 'service-secret-at-least-thirty-two-characters',
+    timeoutMs: 1000,
+  }
+
+  it('uses private introspection for cookie sessions without consulting the legacy JWT', async () => {
+    const people = fakePersonRep(vi.fn())
+    const fetchImpl = vi.fn().mockResolvedValue(new Response(
+      JSON.stringify({ personId: 7, csrfValid: false, originValid: false }),
+      { status: 200, headers: { 'Content-Type': 'application/json' } },
+    ))
+    const middleware = createAuthenticateMiddleware(SECRET, introspection, fetchImpl)
+    const req = fakeRequest('Bearer invalid-legacy-token', people)
+    req.headers.cookie = `radar_session=${'a'.repeat(64)}`
+    req.method = 'GET'
+    const res = fakeResponse()
+    const next = vi.fn()
+
+    await middleware(req, res, next)
+
+    expect(req.personId).toBe(7)
+    expect(next).toHaveBeenCalledOnce()
+    expect(people.findIdByUsername).not.toHaveBeenCalled()
+    expect(fetchImpl).toHaveBeenCalledOnce()
+    expect(fetchImpl.mock.calls[0]?.[1]?.headers['X-Radar-Service-Token']).toBe(introspection.serviceToken)
+  })
+
+  it('rejects revoked and expired cookie sessions without falling back to Bearer', async () => {
+    const fetchImpl = vi.fn().mockResolvedValue(new Response('{}', { status: 401 }))
+    const middleware = createAuthenticateMiddleware(SECRET, introspection, fetchImpl)
+    const req = fakeRequest(`Bearer ${signToken({ sub: 'usuario', exp: Math.floor(Date.now() / 1000) + 60 })}`,
+      fakePersonRep(vi.fn().mockResolvedValue(7)))
+    req.headers.cookie = `radar_session=${'a'.repeat(64)}`
+    req.method = 'GET'
+    const res = fakeResponse()
+    const next = vi.fn()
+
+    await middleware(req, res, next)
+
+    expect(res.status).toHaveBeenCalledWith(401)
+    expect(next).not.toHaveBeenCalled()
+  })
+
+  it('requires positive origin and CSRF validation for cookie mutations', async () => {
+    const fetchImpl = vi.fn()
+      .mockResolvedValueOnce(new Response(JSON.stringify({ personId: 7, csrfValid: false, originValid: true })))
+      .mockResolvedValueOnce(new Response(JSON.stringify({ personId: 7, csrfValid: true, originValid: true })))
+    const middleware = createAuthenticateMiddleware(SECRET, introspection, fetchImpl)
+    const req = fakeRequest(undefined, fakePersonRep(vi.fn()))
+    req.headers.cookie = `radar_session=${'a'.repeat(64)}`
+    req.headers.origin = 'https://radar.example'
+    req.headers['x-csrf-token'] = 'csrf-token'
+    req.method = 'POST'
+    const denied = fakeResponse()
+
+    await middleware(req, denied, vi.fn())
+    expect(denied.status).toHaveBeenCalledWith(403)
+
+    const allowed = fakeResponse()
+    const next = vi.fn()
+    await middleware(req, allowed, next)
+    expect(next).toHaveBeenCalledOnce()
+    expect(req.personId).toBe(7)
+  })
+
+  it('fails closed when the API is unavailable or introspection is not configured', async () => {
+    const req = fakeRequest(undefined, fakePersonRep(vi.fn()))
+    req.headers.cookie = `radar_session=${'a'.repeat(64)}`
+    req.method = 'GET'
+    const unavailable = fakeResponse()
+    await createAuthenticateMiddleware(SECRET, introspection, vi.fn().mockRejectedValue(new Error('network down')))(
+      req, unavailable, vi.fn(),
+    )
+    expect(unavailable.status).toHaveBeenCalledWith(503)
+
+    const missing = fakeResponse()
+    await createAuthenticateMiddleware(SECRET)(req, missing, vi.fn())
+    expect(missing.status).toHaveBeenCalledWith(401)
+  })
+
   it('resolve personId e chama next quando o token é válido e o username existe', async () => {
     const people = fakePersonRep(vi.fn().mockResolvedValue(7))
     const middleware = createAuthenticateMiddleware(SECRET)

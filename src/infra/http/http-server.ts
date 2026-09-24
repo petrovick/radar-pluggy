@@ -6,7 +6,9 @@ import { readPluggyAccountHandler } from '../../adapters/handlers/read-pluggy-ac
 import { readPluggyAccountStatementHandler } from '../../adapters/handlers/read-pluggy-account-statement.handler.js'
 import { createAuthenticateMiddleware } from './middleware/authenticate.middleware.js'
 import { createRequestScopeMiddleware } from './middleware/request-scope.middleware.js'
+import { createHttpBoundaryMiddleware } from './middleware/http-boundary.middleware.js'
 import type { AppContainerInstance } from '../bootstrap/register.js'
+import type { Config } from '../config/config.js'
 import { createLoadPluggyHistoryHandler } from '../../adapters/handlers/load-pluggy-history.handler.js'
 import { createPluggyWebhookHandler } from '../../adapters/handlers/pluggy-webhook.handler.js'
 import { reconcilePluggyWebhookHandler } from '../../adapters/handlers/reconcile-pluggy-webhook.handler.js'
@@ -17,19 +19,22 @@ import { runPluggyItemIngestion } from '../worker/pluggy-item-ingestion.js'
 
 export interface HttpServerDependencies {
   jwtSecret: string
+  corsAllowedOrigins?: readonly string[] | undefined
+  sessionIntrospection?: Config['sessionIntrospection'] | undefined
   container: AppContainerInstance
 }
 
 // Composition root do Express — mora em `infra/http/`, mesmo agrupamento do `oplab-radar-api`
 // (`http-server.ts` + `middleware/` + `routes/`, aqui sem `routes/` porque a rota é montada direto
 // neste arquivo). Toda rota autenticada fica atrás do middleware de autenticação — `personId`
-// nunca chega por outro caminho que não seja o JWT verificado. Nenhum caso de uso é montado à mão
+// chega da sessão validada pela API (ou do JWT legado durante a migração). Nenhum caso de uso é montado à mão
 // aqui: todos saem do escopo da requisição.
 export function createHttpServer(deps: HttpServerDependencies): Express {
   const app = express()
+  app.use(createHttpBoundaryMiddleware(deps.corsAllowedOrigins ?? []))
   app.use(express.json())
 
-  const authenticate = createAuthenticateMiddleware(deps.jwtSecret)
+  const authenticate = createAuthenticateMiddleware(deps.jwtSecret, deps.sessionIntrospection)
   // Escopo de container por request, antes de qualquer rota: é dele que sai a transação, o logger e
   // os casos de uso daquela unidade de trabalho — inclusive os que o middleware de autenticação usa.
   app.use(createRequestScopeMiddleware(deps.container))

@@ -26,6 +26,7 @@ describe('loadConfig', () => {
     expect(loadConfig(env)).toEqual({
       port: 3003,
       jwtSecret: 'segredo-de-teste',
+      corsAllowedOrigins: [],
       webhookUrl: 'https://pluggy-connector.test/webhooks/pluggy',
       credentialEncryptionKey: env.PLUGGY_CREDENTIAL_ENCRYPTION_KEY,
       database: {
@@ -37,6 +38,49 @@ describe('loadConfig', () => {
         dialectOptions: {},
       },
     })
+  })
+
+  it.each(['*', 'null', 'https://app.example/'])('recusa CORS com origem não exata %s', (origin) => {
+    const env = validEnv()
+    const config = JSON.parse(env.CONFIG as string) as { http: Record<string, unknown> }
+    config.http.cors = { allowedOrigins: [origin] }
+    env.CONFIG = JSON.stringify(config)
+
+    expect(reasonOf(() => loadConfig(env))).toMatch(/http\.cors\.allowedOrigins/)
+  })
+
+  it('aceita somente origens exatas configuradas no JSON', () => {
+    const env = validEnv()
+    const config = JSON.parse(env.CONFIG as string) as { http: Record<string, unknown> }
+    config.http.cors = { allowedOrigins: ['https://app.example'] }
+    env.CONFIG = JSON.stringify(config)
+
+    expect(loadConfig(env).corsAllowedOrigins).toEqual(['https://app.example'])
+  })
+
+  it('lê introspecção privada do JSON de configuração', () => {
+    const env = validEnv()
+    const config = JSON.parse(env.CONFIG as string) as { http: Record<string, unknown> }
+    config.http.sessionIntrospection = {
+      url: 'http://oplab-radar-api:3001/internal/sessions/introspect',
+      serviceToken: 'service-secret-at-least-thirty-two-characters',
+      timeoutMs: 1200,
+    }
+    env.CONFIG = JSON.stringify(config)
+
+    expect(loadConfig(env).sessionIntrospection).toEqual(config.http.sessionIntrospection)
+  })
+
+  it.each([
+    'https://public.example/internal/sessions/introspect',
+    'http://oplab-radar-api:3001/other',
+  ])('recusa introspecção fora da rota/rede privada: %s', (url) => {
+    const env = validEnv()
+    const config = JSON.parse(env.CONFIG as string) as { http: Record<string, unknown> }
+    config.http.sessionIntrospection = { url, serviceToken: 'service-secret-at-least-thirty-two-characters' }
+    env.CONFIG = JSON.stringify(config)
+
+    expect(reasonOf(() => loadConfig(env))).toMatch(/sessionIntrospection/)
   })
 
   it('NODE_ENV=production-railway sem CONFIG/DATABASES recusa', () => {

@@ -35,6 +35,8 @@ export type DatabaseConnectionConfig = {
 export type Config = {
   port: number
   jwtSecret: string
+  corsAllowedOrigins?: readonly string[]
+  sessionIntrospection?: { url: string; serviceToken: string; timeoutMs: number }
   webhookUrl: string
   /** Base64 de 32 bytes, já validado. Registrado no container (`register.ts`) e passado por
    * parâmetro a `encryptSecret`/`decryptSecret` no ponto de uso — nunca lido de `process.env` ali. */
@@ -78,7 +80,12 @@ function readJsonSource(env: NodeJS.ProcessEnv): RawSource {
 export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
   const source = readJsonSource(env)
   const config = source.config as {
-    http?: { port?: number; jwtSecret?: string }
+    http?: {
+      port?: number
+      jwtSecret?: string
+      cors?: { allowedOrigins?: unknown }
+      sessionIntrospection?: { url?: string; serviceToken?: string; timeoutMs?: number }
+    }
     pluggy?: { webhookUrl?: string; credentialEncryptionKey?: string }
   }
   const { main } = source.databases as { main?: Record<string, unknown> }
@@ -90,6 +97,8 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
     throw new ApplicationError('PLUGGY_CONNECTOR_CONFIG_INVALID', { reason: 'CONFIG.http.jwtSecret is required' })
   }
   assertNoPlaceholder(jwtSecret, 'http.jwtSecret', env)
+  const corsAllowedOrigins = readCorsAllowedOrigins(config.http?.cors?.allowedOrigins)
+  const sessionIntrospection = readSessionIntrospection(config.http?.sessionIntrospection)
 
   const webhookUrl = config.pluggy?.webhookUrl
   if (!webhookUrl || !webhookUrl.startsWith('https://')) {
@@ -113,7 +122,62 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
     throw new ApplicationError('PLUGGY_CONNECTOR_CONFIG_INVALID', { reason: 'databases main connection is required' })
   }
 
-  return { port, jwtSecret, webhookUrl, credentialEncryptionKey, database: readDatabase(main, env) }
+  return {
+    port, jwtSecret, corsAllowedOrigins,
+    ...(sessionIntrospection ? { sessionIntrospection } : {}),
+    webhookUrl, credentialEncryptionKey, database: readDatabase(main, env),
+  }
+}
+
+function readSessionIntrospection(value: {
+  url?: string; serviceToken?: string; timeoutMs?: number
+} | undefined): Config['sessionIntrospection'] {
+  if (value === undefined) return undefined
+  if (typeof value.url !== 'string' || typeof value.serviceToken !== 'string') {
+    throw new ApplicationError('PLUGGY_CONNECTOR_CONFIG_INVALID', { reason: 'http.sessionIntrospection is invalid' })
+  }
+  let url: URL
+  try {
+    url = new URL(value.url)
+  } catch {
+    throw new ApplicationError('PLUGGY_CONNECTOR_CONFIG_INVALID', { reason: 'http.sessionIntrospection.url is invalid' })
+  }
+  const privateHost = url.hostname === 'oplab-radar-api' || url.hostname === 'localhost' ||
+    url.hostname === '127.0.0.1' || url.hostname.endsWith('.railway.internal')
+  const timeoutMs = value.timeoutMs ?? 1500
+  if (
+    !privateHost || !['http:', 'https:'].includes(url.protocol) ||
+    url.pathname !== '/internal/sessions/introspect' || url.search || url.hash || url.username || url.password ||
+    value.serviceToken.length < 32 || !Number.isInteger(timeoutMs) || timeoutMs < 100 || timeoutMs > 5000
+  ) {
+    throw new ApplicationError('PLUGGY_CONNECTOR_CONFIG_INVALID', { reason: 'http.sessionIntrospection is invalid' })
+  }
+  return { url: value.url, serviceToken: value.serviceToken, timeoutMs }
+}
+
+function readCorsAllowedOrigins(value: unknown): readonly string[] {
+  if (value === undefined) return []
+  if (!Array.isArray(value) || !value.every((origin) => typeof origin === 'string')) {
+    throw new ApplicationError('PLUGGY_CONNECTOR_CONFIG_INVALID', {
+      reason: 'http.cors.allowedOrigins must be an array of exact HTTP(S) origins',
+    })
+  }
+  for (const origin of value as string[]) {
+    let parsed: URL
+    try {
+      parsed = new URL(origin)
+    } catch {
+      throw new ApplicationError('PLUGGY_CONNECTOR_CONFIG_INVALID', {
+        reason: 'http.cors.allowedOrigins must contain exact HTTP(S) origins',
+      })
+    }
+    if (origin === 'null' || parsed.origin !== origin || !['http:', 'https:'].includes(parsed.protocol)) {
+      throw new ApplicationError('PLUGGY_CONNECTOR_CONFIG_INVALID', {
+        reason: 'http.cors.allowedOrigins must contain exact HTTP(S) origins',
+      })
+    }
+  }
+  return value as string[]
 }
 
 function readPort(env: NodeJS.ProcessEnv, configuredPort: number | undefined): number {

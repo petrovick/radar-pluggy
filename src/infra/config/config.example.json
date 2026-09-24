@@ -1,7 +1,8 @@
 {
   "http": {
     "port": 3003,
-    "jwtSecret": "INFORME_AQUI_JWT_SECRET"
+    "jwtSecret": "INFORME_AQUI_JWT_SECRET",
+    "cors": { "allowedOrigins": [] }
   },
   "pluggy": {
     "webhookUrl": "https://pluggy-connector.example.com/webhooks/pluggy",
