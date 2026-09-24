@@ -14,7 +14,12 @@ const config = loadConfig()
 const container = setupContainer(config)
 const logger = container.resolve('logger')
 
-const app = createHttpServer({ jwtSecret: config.jwtSecret, container })
+const app = createHttpServer({
+  jwtSecret: config.jwtSecret,
+  corsAllowedOrigins: config.corsAllowedOrigins,
+  sessionIntrospection: config.sessionIntrospection,
+  container,
+})
 
 const server = app.listen(config.port, () => {
   logger.info(`pluggy-connector ouvindo na porta ${config.port}`)
