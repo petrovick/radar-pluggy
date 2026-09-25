@@ -1,5 +1,5 @@
 networks:
-  shared-services:
+  shared-network:
     external: true
 
 services:
@@ -15,6 +15,6 @@ services:
       - ./src/infra/config/databases.json:/application/src/infra/config/databases.json:ro
     container_name: radar-pluggy
     networks:
-      - shared-services
+      - shared-network
     ports:
       - '127.0.0.1:3003:3003'
